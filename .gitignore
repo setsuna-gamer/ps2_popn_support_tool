@@ -42,6 +42,7 @@ Desktop.ini
 
 # Claude Code のローカル設定
 .claude/settings.local.json
+.claude/worktrees/
 
 # ゲーム画面のキャプチャ
 screenshots/
