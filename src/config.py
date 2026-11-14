@@ -6,6 +6,7 @@ import os
 import traceback
 
 from src.music_list_fetch import DEFAULT_MUSIC_LIST_URL
+from src.play_env import DEFAULT_PLATFORM, PLATFORMS
 from src.logger import (
     DEFAULT_LOG_MAX_SIZE_MB, LOG_MAX_SIZE_MB_RANGE, get_logger, set_log_max_size_mb,
 )
@@ -35,7 +36,8 @@ _KEYS = (
     "score_csv_path",
     "score_db_path",
     "score_history_columns",
-    "score_skip_retire",
+    "play_platform",
+    "modernize_patch",
     "diagnostics_enabled",
     "music_list_url",
     "music_list_serial",
@@ -104,6 +106,10 @@ class Config:
         """Lively の CPU 割り当てを 1 コアに絞る（ロード時間短縮）"""
         self.last_song_display: str = "title"
         """メインウィンドウの「最後にプレイした曲」の表記。'title'=曲名 / 'genre'=ジャンル名 / 'genre_title'=ジャンル名(曲名)"""
+        self.play_platform: str = DEFAULT_PLATFORM
+        """プレー環境。スコア記録に付ける (real: 実機 / pcsx2 / other。src/play_env.py)"""
+        self.modernize_patch: bool = False
+        """モダナイズパッチ (COOL 25ms) を適用しているか。スコア記録に付ける"""
         self.log_max_size_mb: int = DEFAULT_LOG_MAX_SIZE_MB
         """ログフォルダ全体の最大容量 (MB)。超えた分は古いログから削除する"""
 
@@ -114,8 +120,6 @@ class Config:
         # スコア履歴ビューの列設定 (並び順 / 非表示列 / 列幅)
         self.score_history_columns: dict = {}
         # スコア保存時の条件
-        self.score_skip_retire: bool = False
-        """リタイアしたプレーのスコアを保存しない"""
 
         self.music_list_serial: int = 0
         """これまでに取り込んだ曲リストの署名の通し番号。これより古い曲リストは取り込まない (巻き戻し防止)"""
@@ -198,6 +202,9 @@ class Config:
                 self.music_list_serial = 0
             if not isinstance(self.music_list_url, str) or not self.music_list_url.strip():
                 self.music_list_url = DEFAULT_MUSIC_LIST_URL
+            if self.play_platform not in PLATFORMS:
+                self.play_platform = DEFAULT_PLATFORM
+            self.modernize_patch = self.modernize_patch is True
             if self.last_song_display not in LAST_SONG_DISPLAYS:
                 self.last_song_display = "title"
             if self.result_screenshot_format not in SCREENSHOT_FORMATS:

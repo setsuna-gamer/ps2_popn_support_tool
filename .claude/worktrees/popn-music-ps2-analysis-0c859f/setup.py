@@ -1,0 +1,241 @@
+"""pop_lively_support_tool - cx_Freeze ビルド設定
+inf_daken_counter_obsw の setup.py をベースに、本ツール向けに改変して作成。
+
+元のコード: https://github.com/dj-kata/inf_daken_counter_obsw (Apache License 2.0)
+"""
+
+import os
+from pathlib import Path
+import sys
+import tomllib
+from cx_Freeze import Executable, setup
+from cx_Freeze.command.build_exe import build_exe as _build_exe
+
+# ver は pyproject.toml の version (年月日 YYMMDD、例: 261004。同日の再リリースは 261004.1) を正とする。
+# exe のバージョンリソースは各要素 16bit までなので "26.10.4" / "26.10.4.1" の形に分割して渡す。
+with open(Path(__file__).parent / "pyproject.toml", "rb") as f:
+    APP_VERSION = tomllib.load(f)["project"]["version"]
+_date, _, _rev = APP_VERSION.partition(".")
+if not (len(_date) == 6 and _date.isdigit() and (_rev.isdigit() if "." in APP_VERSION else True)):
+    raise SystemExit(f"pyproject.toml の version は YYMMDD または YYMMDD.N 形式にしてください: {APP_VERSION}")
+EXE_VERSION = ".".join(
+    [str(int(_date[i:i + 2])) for i in (0, 2, 4)] + ([str(int(_rev))] if _rev else [])
+)
+
+# PySide6のパスを取得
+include_files = []
+try:
+    import PySide6
+
+    pyside6_path = Path(PySide6.__file__).parent
+
+    # プラグインディレクトリ（platforms, stylesなど）
+    plugins_dir = pyside6_path / "plugins"
+    if plugins_dir.exists():
+        include_files.append((str(plugins_dir), "lib/PySide6/plugins"))
+
+    # Qt翻訳ファイル
+    translations_dir = pyside6_path / "translations"
+    if translations_dir.exists():
+        include_files.append((str(translations_dir), "lib/PySide6/translations"))
+
+    # Qt.conf（プラグインパスを指定）
+    qt_conf_content = """[Paths]
+Prefix = .
+Binaries = .
+Plugins = lib/PySide6/plugins
+"""
+    with open("qt.conf", "w", encoding="utf-8") as f:
+        f.write(qt_conf_content)
+    include_files.append(("qt.conf", "qt.conf"))
+
+except ImportError:
+    print("Warning: PySide6 not found. Build may not work correctly.")
+
+# 設定ファイル・関連ファイル
+if os.path.exists("config.json"):
+    include_files.append(("config.json", "config.json"))
+
+# 曲リスト (初回起動時に曲テーブルへ取り込む。無いと曲の特定・曲の選択ができない)
+if os.path.exists("popn_music_list.json"):
+    include_files.append(("popn_music_list.json", "popn_music_list.json"))
+
+if os.path.exists("README.md"):
+    include_files.append(("README.md", "README.md"))
+
+# アプリのバージョンは pyproject.toml の version を正とし、実行時に読む (src/app_version.py)
+include_files.append(("pyproject.toml", "pyproject.toml"))
+
+if os.path.exists("LICENSE"):
+    include_files.append(("LICENSE", "LICENSE"))
+
+# 画面識別のテンプレート (tools/build_screen_profiles.py の生成物。無いと作品・画面を識別できない)
+if os.path.exists("src/screen_profiles.json"):
+    include_files.append(("src/screen_profiles.json", "src/screen_profiles.json"))
+
+# PS2 版の読み取り用テンプレート (生成物。tools/build_ps2_digit_templates.py / build_ps2_marks.py)
+for _name in ("ps2_digit_templates.json", "ps2_mark_templates.json"):
+    if os.path.exists(f"src/{_name}"):
+        include_files.append((f"src/{_name}", f"src/{_name}"))
+
+# PS2 版の曲リスト (収録作品・バナー特徴量を持つ静的リスト)
+if os.path.exists("ps2_music_list.json"):
+    include_files.append(("ps2_music_list.json", "ps2_music_list.json"))
+
+# アイコンファイル
+icon_path = None
+if os.path.exists("src/icon.ico"):
+    include_files.append(("src/icon.ico", "src/icon.ico"))
+    icon_path = "src/icon.ico"
+
+# ビルドオプション
+build_exe_options = {
+    # 含めるパッケージ
+    "packages": [
+        "PySide6.QtCore",
+        "PySide6.QtGui",
+        "PySide6.QtWidgets",
+        "obsws_python",
+        "websocket",
+        "PIL",
+        "numpy",
+        "imagehash",
+        "json",
+        "traceback",
+        "logging",
+        "logging.handlers",
+        "hashlib",
+        "math",
+        "datetime",
+        "time",
+        "threading",
+        "os",
+        "sys",
+        "enum",
+        "html",
+        "csv",
+        "ctypes",
+        "ctypes.wintypes",
+        "dxcam",
+        "comtypes",
+        "winrt",
+        "asyncio",
+        "concurrent.futures",
+    ],
+    # 含めるモジュール
+    "includes": [
+        "src",
+        "src.classes",
+        "src.config",
+        "src.config_dialog",
+        "src.cpu_affinity",
+        "src.define",
+        "src.direct_window_capture",
+        "src.dxcam_window_capture",
+        "src.funcs",
+        "src.logger",
+        "src.obs_dialog",
+        "src.obs_websocket_manager",
+        "src.screen_reader",
+        "src.banner_reader",
+        "src.screen_profile",
+        "src.screen_tracker",
+        "src.titles",
+        "src.ps2_banner",
+        "src.ps2_ocr",
+        "src.ps2_numbers",
+        "src.ps2_layouts",
+        "src.ps2_readers",
+        "src.ps2_marks",
+        "src.ps2_songs",
+        "src.song_info",
+        "src.win_ocr",
+        "src.hdr_monitor",
+        "src.score_manager",
+        "src.score_dialog",
+        "src.ui_jp",
+        "src.app_version",
+        "src.updater",
+        "src.signing",
+        "src.ed25519",
+        "src.trusted_keys",
+        "src.secure_http",
+        "src.music_list_fetch",
+        "src.update_dialog",
+        "tomllib",
+        "ctypes",
+        "ctypes.wintypes",
+        "ctypes.util",
+        "PIL.ImageGrab",
+    ],
+    # 除外するパッケージ（ファイルサイズ削減）
+    "excludes": [
+        "matplotlib",
+        "pandas",
+        "scipy",
+        "test",
+        "unittest",
+        "email",
+        "distutils",
+        "setuptools",
+        "pip",
+        # PySide6の不要なモジュール
+        "PySide6.QtNetwork",
+        "PySide6.QtOpenGL",
+        "PySide6.QtPrintSupport",
+        "PySide6.QtQml",
+        "PySide6.QtQuick",
+        "PySide6.QtSql",
+        "PySide6.QtTest",
+        "PySide6.QtWebEngineCore",
+        "PySide6.QtWebEngineWidgets",
+        "PySide6.Qt3DCore",
+        "PySide6.Qt3DRender",
+        "PySide6.QtCharts",
+        "PySide6.QtDataVisualization",
+        "obsws_python.requests",
+    ],
+    "include_files": include_files,
+    "include_msvcr": True,
+    "zip_include_packages": [],
+    "zip_exclude_packages": ["obsws_python"],
+    "optimize": 2,
+    "build_exe": "dist/pop_lively_support_tool",
+}
+
+# 実行形式ベース
+base = None
+if sys.platform == "win32":
+    base = "Win32GUI"
+
+executables = [
+    Executable(
+        script="pop_lively_support_tool.pyw",
+        base=base,
+        target_name="pop_lively_support_tool.exe",
+        icon=icon_path,
+        shortcut_name="pop_lively_support_tool",
+        shortcut_dir="DesktopFolder",
+    )
+]
+
+
+class build_exe(_build_exe):
+    """setuptools は setup() の引数より pyproject.toml の version (YYMMDD) を優先するため、
+    exe のバージョンリソースに渡す直前で EXE_VERSION に差し替える。"""
+
+    def run(self):
+        self.distribution.metadata.version = EXE_VERSION
+        super().run()
+
+
+setup(
+    name="pop_lively_support_tool",
+    version=EXE_VERSION,
+    description="pop_lively_support_tool",
+    options={
+        "build_exe": build_exe_options,
+    },
+    cmdclass={"build_exe": build_exe},
+    executables=executables,
+)

@@ -1,0 +1,1068 @@
+"""pop_lively_support_tool メインエントリポイント"""
+from __future__ import annotations
+
+import os
+import re
+import sys
+import time
+import traceback
+from datetime import datetime
+
+from PySide6.QtCore import QTimer, Qt
+from PySide6.QtGui import QAction, QFont, QIcon
+from PySide6.QtWidgets import (
+    QApplication,
+    QGroupBox,
+    QFormLayout,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QMenuBar,
+    QPushButton,
+    QStatusBar,
+    QVBoxLayout,
+    QWidget,
+)
+
+from src.config import Config
+from src.classes import DetectMode, PopnJudge, PopnOptions, format_song
+from src.play_env import modernize_text, platform_name
+from src.titles import title_name
+from src.cpu_affinity import LivelyCpuAffinity
+from src.screen_reader import ScreenReader
+from src.option_reader import GUIDE_SE_ON
+from src.obs_websocket_manager import OBSWebSocketManager
+from src.app_version import get_app_version
+from src.diagnostics import KIND_JUDGE, KIND_RESULT, KIND_TITLE, DiagnosticStore
+from src.score_manager import ScoreManager
+from src.score_stats import append_session_log, summarize_session
+from src.funcs import load_ui_text
+from src.logger import get_logger
+
+logger = get_logger(__name__)
+
+_LOOP_INTERVAL_MS = 100   # メインループ間隔 (ms)
+_CPU_AFFINITY_INTERVAL_MS = 1000   # Lively の CPU 割り当て監視間隔 (ms)
+
+# 曲名読み取り: このフレーム数ごとに 1 回読む (OCR は 1 回数十 ms かかるため毎フレームは行わない)
+_TITLE_SCAN_INTERVAL_FRAMES = 5
+# 曲名読み取り: この回数読んでも曲を特定できなければ諦める
+_TITLE_SCAN_MAX_TRIES = 20
+
+# オプション読み取り: このフレーム数ごとに 1 回読む
+_OPTION_SCAN_INTERVAL_FRAMES = 3
+# オプション読み取り: 同じ値がこの回数続いたら反映する（画面の開閉演出の途中を掴まないため）
+_OPTION_STABLE_READS = 2
+# バナー照合: 同じ曲がこの回数続いたら採用する
+_BANNER_STABLE_READS = 2
+# リザルト画面のバナー照合: このフレーム数ごとに 1 回読む
+_RESULT_BANNER_INTERVAL_FRAMES = 2
+# GUIDE SE の ON の値。アイコンからは大/小が分からないので、先頭 (ゲームの初期値) を既定とする
+_GUIDE_SE_ON_VALUES = ("ON 大", "ON 小")
+
+# リザルト読み取り: 同じ値がこのフレーム数続いたら確定する（表示演出の途中を掴まないため）
+_RESULT_STABLE_FRAMES = 3
+# リザルト読み取り: このフレーム数待っても安定しなければ、その時点の値で記録する
+_RESULT_TIMEOUT_FRAMES = 50
+
+# 現在のモード表示の文字色
+_MODE_COLORS = {
+    DetectMode.play:             "#00e676",  # プレー中（緑）
+    DetectMode.result:           "#ffd600",  # リザルト（黄）
+    DetectMode.select:           "#40c4ff",  # 選曲中（水色）
+    DetectMode.option:           "#ff80ab",  # オプション（ピンク）
+    DetectMode.title:            "#b388ff",  # タイトル（紫）
+    DetectMode.mode_select:      "#b388ff",  # モード選択（紫）
+    DetectMode.character_select: "#b388ff",  # キャラセレクト（紫）
+    DetectMode.freetraining:     "#40c4ff",  # フリートレーニング（水色）
+    DetectMode.exit:             "#ff5252",  # 終了画面（赤）
+    DetectMode.loading:          "#ffab40",  # ロード中（オレンジ）
+    DetectMode.unknown:          "#aaaaaa",  # 待機中（グレー）
+}
+
+# OBS トリガー (<モード名>_start / <モード名>_end) を出す画面。
+# 1 回の画面遷移で出る開始・終了トリガーの順序は、この並び順で決まる
+_TRIGGER_MODES = (
+    DetectMode.title,
+    DetectMode.mode_select,
+    DetectMode.character_select,
+    DetectMode.select,
+    DetectMode.freetraining,
+    DetectMode.option,
+    DetectMode.play,
+    DetectMode.result,
+    DetectMode.loading,
+    DetectMode.exit,
+)
+
+
+def _bold_font(point_size: int) -> QFont:
+    font = QFont()
+    font.setPointSize(point_size)
+    font.setBold(True)
+    return font
+
+
+class MainWindow(QMainWindow):
+    """pop_lively_support_tool メインウィンドウ"""
+
+    def __init__(self):
+        super().__init__()
+
+        self.config  = Config()
+        self.ui      = load_ui_text(self.config)
+        self.screen_reader = ScreenReader()
+        self.obs_manager   = OBSWebSocketManager()
+        self.score_manager = ScoreManager(
+            db_path=self.config.score_db_path,
+            csv_path=self.config.score_csv_path,
+        )
+
+        # 打鍵カウント（現在の曲の判定内訳）。プレー画面下部の累計値を読んだもので、
+        # リザルト画面を読めた時点でその値に置き換える
+        self._song_judge = PopnJudge()
+
+        # 本日の打鍵数・日付管理
+        # _today_notes は確定分（リザルトで記録した曲 + 途中でやめた曲の暫定値）。
+        # 表示はこれにプレー中の曲の暫定値を加えたもの (_update_display)
+        self._today_date  = datetime.now().strftime("%Y-%m-%d")
+        self._today_notes = self.score_manager.get_today_notes(self._today_date)
+
+        # 起動時刻
+        self._start_time = time.time()
+
+        # 認識診断 (設定で有効なときだけ保存する)
+        self.diagnostics = DiagnosticStore()
+        self._last_play_image = None   # 直近のプレー画面 (判定内訳の読み取りがリザルトと食い違ったときの診断用)
+        self._unidentified_difficulty = ""
+        self._session_start = datetime.now().replace(microsecond=0)
+
+        # 最後にプレイした曲
+        # (曲名, ジャンル名, 難易度区分) または None。表記は設定に従って組み立てる
+        self._last_played = self.score_manager.get_last_played_song()
+        self._last_played_song = self._format_last_played()
+
+        # 画面状態
+        self.current_mode = DetectMode.unknown
+        self._shown_title_id: str | None = None   # 画面に表示している作品 (title_id)
+        self._title_scanned = False
+        self._title_frames = 0
+
+        # オプション読み取り状態
+        self._option_values = None   # 直近に読めたオプション一覧
+        self._option_stable = 0
+        self._option_frames = 0
+        self._banner_music_id = ""    # オプション画面のバナーから特定した曲 (特定できなければ空)
+        self._banner_candidate = ""
+        self._banner_stable = 0
+        self._result_banner_id = ""   # リザルト画面のバナーから特定した曲 (特定できなければ空)
+        self._result_banner_candidate = ""
+        self._result_banner_stable = 0
+
+        # リザルト読み取り待ち状態
+        self._result_pending = False
+        self._result_frames = 0
+        self._result_stable = 0
+        self._result_values = None   # 直近に全項目を読めた値
+        self._result_image = None    # 直近のリザルト画面フレーム
+        self._result_failed = None   # リザルト画面で「STAGE FAILED」(クリア失敗) を検出したか。判定できない作品は None
+        self._result_new_record = False  # リザルト画面で「NEW RECORD!」の表示を検出したか
+
+        # 自動更新 (確認はメニュー、または設定で有効なら起動の少しあと)
+        from src.update_dialog import UpdateController
+        self.updater = UpdateController(self, self.close)
+
+        self._setup_ui()
+        self._apply_play_environment()
+        self._setup_obs()
+        # 曲リストは確認なしで自動更新し、アプリ本体は設定の更新チェック方式に従う
+        from src.startup_check import StartupUpdateCheck
+        self.startup_check = StartupUpdateCheck(
+            self, self.config, self.score_manager, self.updater, self._refresh_after_data_change
+        )
+        QTimer.singleShot(1500, self.startup_check.start)
+
+        # メインループ
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._main_loop)
+        self._timer.start(_LOOP_INTERVAL_MS)
+
+        # Lively の CPU 割り当て監視
+        self.cpu_affinity = LivelyCpuAffinity()
+        self._affinity_timer = QTimer(self)
+        self._affinity_timer.timeout.connect(self._update_cpu_affinity)
+        self._affinity_timer.start(_CPU_AFFINITY_INTERVAL_MS)
+
+        # ウィンドウ位置・サイズ復元
+        self.setGeometry(
+            self.config.main_window_x,
+            self.config.main_window_y,
+            self.config.main_window_width,
+            self.config.main_window_height,
+        )
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, self.config.keep_on_top)
+
+    # ------------------------------------------------------------------
+    # UI 構築
+    # ------------------------------------------------------------------
+
+    def _setup_ui(self):
+        self.setWindowTitle(self.ui.window.main_title)
+        self.setMinimumWidth(400)
+
+        # メニューバー
+        menubar: QMenuBar = self.menuBar()
+        file_menu = menubar.addMenu(self.ui.menu.file)
+
+        act_settings = QAction(self.ui.menu.settings, self)
+        act_settings.triggered.connect(self._open_settings)
+        file_menu.addAction(act_settings)
+
+        act_obs = QAction(self.ui.menu.obs_settings, self)
+        act_obs.triggered.connect(self._open_obs_settings)
+        file_menu.addAction(act_obs)
+
+        file_menu.addSeparator()
+
+        act_open_shot_dir = QAction(self.ui.menu.open_screenshot_dir, self)
+        act_open_shot_dir.triggered.connect(self._open_screenshot_dir)
+        file_menu.addAction(act_open_shot_dir)
+
+        act_reset =QAction(self.ui.menu.reset_count, self)
+        act_reset.triggered.connect(self._reset_counts)
+        file_menu.addAction(act_reset)
+
+        file_menu.addSeparator()
+
+        act_exit = QAction(self.ui.menu.exit, self)
+        act_exit.triggered.connect(self.close)
+        file_menu.addAction(act_exit)
+
+        # スコアメニュー
+        score_menu = menubar.addMenu(self.ui.menu.score)
+
+        act_history = QAction(self.ui.menu.score_history, self)
+        act_history.triggered.connect(self._open_score_history)
+        score_menu.addAction(act_history)
+
+        act_stats = QAction(self.ui.menu.stats, self)
+        act_stats.triggered.connect(self._open_stats)
+        score_menu.addAction(act_stats)
+
+        act_session = QAction(self.ui.menu.session_summary, self)
+        act_session.triggered.connect(self._open_session_summary)
+        score_menu.addAction(act_session)
+
+        # データメニュー
+        data_menu = menubar.addMenu(self.ui.menu.data)
+        for text, handler in (
+            (self.ui.menu.update_music_list_url, self._update_music_list_from_url),
+            (self.ui.menu.update_music_list, self._update_music_list),
+            (self.ui.menu.backup, self._create_backup),
+            (self.ui.menu.restore, self._restore_backup),
+            (None, None),
+            (self.ui.menu.export_csv, self._export_csv),
+            (self.ui.menu.open_csv, self.score_manager.open_csv),
+            (self.ui.menu.import_csv, self._import_csv),
+            (None, None),
+            (self.ui.menu.diagnostics, self._open_diagnostics),
+        ):
+            if text is None:
+                data_menu.addSeparator()
+                continue
+            action = QAction(text, self)
+            action.triggered.connect(handler)
+            data_menu.addAction(action)
+
+        # ヘルプメニュー
+        help_menu = menubar.addMenu(self.ui.menu.help)
+        act_update = QAction(self.ui.menu.check_update, self)
+        act_update.triggered.connect(lambda: self.updater.check(silent=False))
+        help_menu.addAction(act_update)
+        act_about = QAction(self.ui.menu.about, self)
+        act_about.triggered.connect(self._show_about)
+        help_menu.addAction(act_about)
+
+        # 中央ウィジェット
+        central = QWidget()
+        self.setCentralWidget(central)
+        layout = QVBoxLayout(central)
+        layout.setSpacing(10)
+
+        # 情報表示グループ
+        info_group = QGroupBox(self.ui.main_display.group)
+        info_form  = QFormLayout(info_group)
+        info_form.setSpacing(10)
+        info_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        font_lbl = _bold_font(11)
+        font_val = _bold_font(13)
+        font_notes = _bold_font(22)
+        font_time = _bold_font(16)
+
+        def make_row_label(text: str) -> QLabel:
+            lbl = QLabel(text)
+            lbl.setFont(font_lbl)
+            lbl.setStyleSheet("color: #aaaaaa;")
+            return lbl
+
+        status = self.ui.status
+        self._mode_labels = {
+            DetectMode.play:             status.playing,
+            DetectMode.result:           status.result,
+            DetectMode.select:           status.select,
+            DetectMode.option:           status.option,
+            DetectMode.title:            status.title,
+            DetectMode.mode_select:      status.mode_select,
+            DetectMode.character_select: status.character_select,
+            DetectMode.freetraining:     status.freetraining,
+            DetectMode.exit:             status.exit,
+            DetectMode.loading:          status.loading,
+            DetectMode.unknown:          status.waiting_game,
+        }
+
+        self.lbl_mode = QLabel()
+        self.lbl_mode.setFont(font_val)
+
+        self.lbl_title = QLabel(self.ui.main_display.title_unknown)
+        self.lbl_title.setFont(font_val)
+        self.lbl_title.setStyleSheet("color: #aaaaaa; font-weight: bold;")
+
+        self.lbl_env = QLabel("")
+        self.lbl_env.setFont(font_val)
+        self.lbl_env.setStyleSheet("color: #ffffff; font-weight: bold;")
+
+        self.lbl_uptime = QLabel("00:00:00")
+        self.lbl_uptime.setFont(font_time)
+        self.lbl_uptime.setStyleSheet("color: #80d8ff; font-weight: bold;")
+
+        self.lbl_today_notes = QLabel(f"{self._today_notes:,}")
+        self.lbl_today_notes.setFont(font_notes)
+        self.lbl_today_notes.setStyleSheet("color: #ffb74d; font-weight: bold;")
+
+        self.lbl_last_song = QLabel(self._last_played_song)
+        self.lbl_last_song.setFont(font_val)
+        self.lbl_last_song.setStyleSheet("color: #ffffff; font-weight: bold;")
+        self.lbl_last_song.setWordWrap(True)
+
+        info_form.addRow(make_row_label(self.ui.main_display.current_mode), self.lbl_mode)
+        info_form.addRow(make_row_label(self.ui.main_display.current_title), self.lbl_title)
+        info_form.addRow(make_row_label(self.ui.main_display.play_env),      self.lbl_env)
+        info_form.addRow(make_row_label(self.ui.main_display.uptime),       self.lbl_uptime)
+        info_form.addRow(make_row_label(self.ui.main_display.today_notes),  self.lbl_today_notes)
+        info_form.addRow(make_row_label(self.ui.main_display.last_song),    self.lbl_last_song)
+
+        self.lbl_chart_info = QLabel("")
+        self.lbl_chart_info.setFont(font_lbl)
+        self.lbl_chart_info.setStyleSheet("color: #80d8ff; font-weight: bold;")
+        self.lbl_chart_info.setWordWrap(True)
+        info_form.addRow(make_row_label(self.ui.main_display.chart_info), self.lbl_chart_info)
+
+        layout.addWidget(info_group)
+
+        # 曲を特定できなかったときだけ表示する、曲の手動選択ボタン
+        self.btn_pick_song = QPushButton(self.ui.main_display.pick_song)
+        self.btn_pick_song.setToolTip(self.ui.main_display.pick_song_tip)
+        self.btn_pick_song.clicked.connect(self._pick_song)
+        self.btn_pick_song.hide()
+        layout.addWidget(self.btn_pick_song)
+
+        # スクリーンショット行: フォルダを開く + 手動撮影
+        self.btn_open_shot_dir = QPushButton(self.ui.main_display.open_screenshot_dir)
+        self.btn_open_shot_dir.clicked.connect(self._open_screenshot_dir)
+        self.btn_screenshot = QPushButton("📷")
+        self.btn_screenshot.setToolTip(self.ui.main_display.screenshot_tip)
+        self.btn_screenshot.clicked.connect(self._manual_screenshot)
+        shot_row = QHBoxLayout()
+        shot_row.addWidget(self.btn_open_shot_dir, 1)
+        shot_row.addWidget(self.btn_screenshot)
+        layout.addLayout(shot_row)
+
+        # 画面取り込みのリロード (最優先の方式から試し直す)
+        self.btn_reload_capture = QPushButton(self.ui.main_display.reload_capture)
+        self.btn_reload_capture.setToolTip(self.ui.main_display.reload_capture_tip)
+        self.btn_reload_capture.clicked.connect(lambda: self._apply_obs_config())
+        shot_row.addWidget(self.btn_reload_capture)
+
+        # リセットボタン
+        self.btn_reset = QPushButton(self.ui.main_display.reset_notes)
+        self.btn_reset.clicked.connect(self._reset_counts)
+        layout.addWidget(self.btn_reset)
+
+        layout.addStretch()
+
+        # ステータスバー
+        self._statusbar = QStatusBar()
+        self.setStatusBar(self._statusbar)
+
+        self._lbl_game = QLabel(self.ui.status.waiting_game)
+        self._lbl_obs  = QLabel(self.ui.status.obs_disconnected)
+        self._lbl_mode = QLabel("")
+
+        self._statusbar.addWidget(self._lbl_game, 1)
+        self._statusbar.addPermanentWidget(self._lbl_mode)
+        self._statusbar.addPermanentWidget(self._lbl_obs)
+
+        self._show_mode(DetectMode.unknown, in_statusbar=False)
+
+    # ------------------------------------------------------------------
+    # セットアップ
+    # ------------------------------------------------------------------
+
+    def _setup_obs(self):
+        self.obs_manager.connection_changed.connect(self._on_obs_connection_changed)
+        self._apply_obs_config()
+
+    def _apply_obs_config(self):
+        """設定 (キャプチャ方式・接続先) を OBS マネージャへ反映し、必要なら接続し直す。"""
+        self.obs_manager.set_config(self.config)
+        if self.obs_manager.uses_obs_websocket():
+            self.obs_manager.connect()
+        else:
+            self.obs_manager.disconnect_obs()
+        self.obs_manager.restart_fallback_timer()
+
+    def _on_obs_connection_changed(self, connected: bool, message: str):
+        if connected:
+            self._lbl_obs.setText(self.ui.status.obs_connected)
+            self._lbl_obs.setStyleSheet("color: #188038; font-weight: bold;")
+        else:
+            self._lbl_obs.setText(self.ui.status.obs_disconnected)
+            self._lbl_obs.setStyleSheet("color: #d93025;")
+        status_text, _ = self.obs_manager.get_status()
+        self._lbl_game.setText(status_text)
+
+    # ------------------------------------------------------------------
+    # メインループ
+    # ------------------------------------------------------------------
+
+    def _main_loop(self):
+        try:
+            self._update_uptime()
+            self._check_date_rollover()
+
+            image = self.obs_manager.read_frame()
+
+            if image is None:
+                self._lbl_game.setText(self.obs_manager.get_status()[0])
+                self._show_mode(DetectMode.unknown, in_statusbar=False)
+                return
+
+            mode = self.screen_reader.detect_mode(image)
+            self._sync_title()
+            self._handle_mode(mode, image)
+
+        except Exception:
+            logger.error(traceback.format_exc())
+
+    def _apply_play_environment(self):
+        """設定のプレー環境・モダナイズパッチの有無を、スコア記録と画面表示に反映する。"""
+        platform, patch = self.config.play_platform, self.config.modernize_patch
+        self.score_manager.set_play_environment(platform, patch)
+        self.lbl_env.setText(f"{platform_name(platform)} / モダナイズ{modernize_text(patch)}")
+
+    def _sync_title(self):
+        """画面識別で確定した作品を、スコア記録と画面表示に反映する。"""
+        title_id = self.screen_reader.current_title
+        if title_id == self._shown_title_id:
+            return
+        self._shown_title_id = title_id
+        if title_id:
+            self.score_manager.set_current_title_id(title_id)
+            self.lbl_title.setText(title_name(title_id))
+            self.lbl_title.setStyleSheet("color: #ffffff; font-weight: bold;")
+        else:
+            self.lbl_title.setText(self.ui.main_display.title_unknown)
+            self.lbl_title.setStyleSheet("color: #aaaaaa; font-weight: bold;")
+
+    def _show_mode(self, mode: DetectMode, in_statusbar: bool = True):
+        """現在のモード表示を更新する。"""
+        text = self._mode_labels[mode]
+        self.lbl_mode.setText(text)
+        self.lbl_mode.setStyleSheet(f"color: {_MODE_COLORS[mode]}; font-weight: bold;")
+        self._lbl_mode.setText(text if in_statusbar else "")
+
+    def _handle_mode(self, mode: DetectMode, image):
+        if mode != self.current_mode:
+            self._on_mode_changed(self.current_mode, mode)
+        self.current_mode = mode
+
+        self._show_mode(mode)
+        self._lbl_game.setText(self.obs_manager.get_status()[0])
+
+        if mode == DetectMode.option:
+            self._process_option(image)
+        elif mode == DetectMode.play:
+            self._process_play(image)
+        elif mode == DetectMode.result and self._result_pending:
+            # 数値が安定するまで読み取りを続ける
+            self._process_result(image)
+
+    def _on_mode_changed(self, prev: DetectMode, curr: DetectMode):
+        logger.info("モード変更: %s → %s", prev.name, curr.name)
+        for mode in _TRIGGER_MODES:
+            if curr == mode:
+                self._enter_mode(mode)
+                self._trigger_obs(f"{mode.name}_start")
+            if prev == mode:
+                self._leave_mode(mode)
+                self._trigger_obs(f"{mode.name}_end")
+
+    def _enter_mode(self, mode: DetectMode):
+        if mode == DetectMode.option:
+            self._option_values = None
+            self._option_stable = 0
+            self._option_frames = 0
+            self._banner_music_id = self._banner_candidate = ""
+            self._banner_stable = 0
+        elif mode == DetectMode.play:
+            self._title_scanned = False
+            self._title_frames = 0
+            self.score_manager.reset_current_song()
+            self.lbl_chart_info.setText("")
+            self.btn_pick_song.hide()
+            self._unidentified_difficulty = ""
+            # 判定内訳はここではリセットしない。プレー画面の検出が一瞬途切れただけの場合に
+            # 数え直しにならないよう、累計値が 0 に戻ったことを見て曲の切り替わりを判断する
+        elif mode == DetectMode.result:
+            # スコアの記録は数値が安定してから行う (_process_result)
+            self._result_pending = True
+            self._result_frames = 0
+            self._result_stable = 0
+            self._result_values = None
+            self._result_image = None
+            self._result_failed = None
+            self._result_new_record = False
+            self._result_banner_id = self._result_banner_candidate = ""
+            self._result_banner_stable = 0
+
+    def _leave_mode(self, mode: DetectMode):
+        if mode == DetectMode.result:
+            # 安定を待っている間にリザルト画面を抜けた場合は、最後に読めた値で記録する
+            if self._result_pending and self._result_image is not None:
+                self._save_result(self._result_image, self._result_values)
+            self._result_pending = False
+
+    def _process_option(self, image):
+        """オプション選択画面の設定一覧を読み、続けて同じ値になったら反映する。"""
+        self._option_frames += 1
+        if (self._option_frames - 1) % _OPTION_SCAN_INTERVAL_FRAMES != 0:
+            return
+
+        if not self._banner_music_id:
+            self._banner_candidate, self._banner_stable, self._banner_music_id = self._track_banner(
+                image, self._banner_candidate, self._banner_stable
+            )
+        values = self.screen_reader.read_options(image)
+        if not values:
+            self._option_values = None
+            self._option_stable = 0
+            return
+
+        self._option_stable = self._option_stable + 1 if values == self._option_values else 1
+        self._option_values = values
+        if self._option_stable != _OPTION_STABLE_READS:
+            return
+
+        # 読めなかった項目は現在の値を引き継ぐ
+        current = self.score_manager.current_options.to_dict()
+        if values.get("guide_se") == GUIDE_SE_ON:
+            # アイコンからは ON の大/小が分からない。直前が ON ならその値、OFF なら初期値の「ON 大」とする
+            guide_se = current.get("guide_se")
+            values = {**values, "guide_se": guide_se if guide_se in _GUIDE_SE_ON_VALUES else _GUIDE_SE_ON_VALUES[0]}
+        if any(current.get(k) != v for k, v in values.items()):
+            self.score_manager.set_current_options(PopnOptions.from_dict({**current, **values}))
+
+    def _read_banner_id(self, image) -> str:
+        """画面 (オプション画面・リザルト画面) から曲を特定して music_id を返す。特定できなければ空文字。
+
+        オプション画面はバナー (決まらなければ OCR)、リザルト画面はバナーが出る作品だけバナーで特定する (src/ps2_songs.py)。
+        """
+        screen = "result" if self.current_mode == DetectMode.result else "option"
+        return self.score_manager.identify_screen_song(image, self.screen_reader.current_title, screen)
+
+    def _track_banner(self, image, candidate: str, stable: int) -> tuple[str, int, str]:
+        """バナーを 1 回読み、同じ曲が続けて読めたら採用する。(候補, 連続回数, 採用した曲 (未採用なら空)) を返す。
+
+        オプション画面ではプレー画面での曲の特定に、リザルト画面ではスコアの記録に使う。
+        """
+        music_id = self._read_banner_id(image)
+        if not music_id:
+            return "", 0, ""
+        stable = stable + 1 if music_id == candidate else 1
+        return music_id, stable, music_id if stable >= _BANNER_STABLE_READS else ""
+
+    def _process_play(self, image):
+        self._last_play_image = image
+        # プレー開始直後に曲名・難易度区分を認識
+        if not self._title_scanned:
+            self._scan_play_song(image)
+
+        judge, restarted = self.screen_reader.detect_judge(image)
+        if restarted:
+            # 累計値が 0 に戻った = 次の曲が始まった。リザルトに到達しなかった曲
+            # （リタイア・リトライ）の分が残っていれば確定分へ繰り入れる
+            self._today_notes += self._song_judge.notes
+        changed = restarted or judge.notes != self._song_judge.notes
+        self._song_judge = judge
+        if changed:
+            self._check_date_rollover()
+            self._update_display()
+
+    def _scan_play_song(self, image):
+        """プレー画面上部の曲名バーから曲を特定する。特定できるまで一定間隔で読み直す。"""
+        self._title_frames += 1
+        if (self._title_frames - 1) % _TITLE_SCAN_INTERVAL_FRAMES != 0:
+            return
+
+        song = self.screen_reader.read_play_song(image)
+        if self._banner_music_id and self.score_manager.identify_music(self._banner_music_id, song.difficulty):
+            identified = True   # オプション画面のバナーで特定済み (曲名 OCR より確実)
+        else:
+            identified = bool(song.text) and self.score_manager.identify_song(song.text, song.difficulty)
+        if identified:
+            self._title_scanned = True
+            self._set_last_played_song(
+                self.score_manager.current_song_title, song.difficulty, self.score_manager.current_genre
+            )
+            self.lbl_chart_info.setStyleSheet("color: #80d8ff; font-weight: bold;")
+            self.lbl_chart_info.setText(self.score_manager.describe_current_chart())
+        elif self._title_frames >= _TITLE_SCAN_INTERVAL_FRAMES * _TITLE_SCAN_MAX_TRIES:
+            self._title_scanned = True
+            logger.warning("曲を特定できませんでした (読み取り結果: '%s' / %s)", song.text, song.difficulty)
+            self.screen_reader.save_unread_title(image)
+            self._on_song_unidentified(image, song)
+
+    def _on_song_unidentified(self, image, song):
+        """曲を特定できなかったときの救済 (手動選択ボタンの表示) と診断データの保存。"""
+        self._unidentified_difficulty = song.difficulty
+        if song.difficulty:
+            # 曲は不明でも、難易度区分はアイコンから分かるので記録に使う
+            self.score_manager.set_current_chart("", song.difficulty)
+        self.lbl_chart_info.setStyleSheet("color: #ffab40; font-weight: bold;")
+        self.lbl_chart_info.setText(self.ui.main_display.song_unidentified.format(text=song.text or "-"))
+        self.btn_pick_song.show()
+        if self.config.diagnostics_enabled:
+            self.diagnostics.add(
+                KIND_TITLE, image, {"text": song.text, "difficulty": song.difficulty},
+                note="曲を特定できませんでした",
+            )
+
+    def _pick_song(self):
+        """曲を特定できなかったとき、曲を手動で選ぶ。選んだ曲は読み替えとして学習する。"""
+        from src.score_dialog import MusicSelectDialog
+        dlg = MusicSelectDialog(self.score_manager, "", self)
+        if not (dlg.exec() and dlg.selected):
+            return
+        fixed = self.score_manager.assign_song(dlg.selected, self._unidentified_difficulty)
+        self.btn_pick_song.hide()
+        self._set_last_played_song(
+            self.score_manager.current_song_title, self.score_manager.current_difficulty,
+            self.score_manager.current_genre,
+        )
+        self.lbl_chart_info.setStyleSheet("color: #80d8ff; font-weight: bold;")
+        self.lbl_chart_info.setText(self.score_manager.describe_current_chart())
+        self._statusbar.showMessage(
+            "直前のスコアの曲を付け替えました (次回から自動で認識します)" if fixed
+            else "曲を設定しました (次回から自動で認識します)", 6000,
+        )
+
+    def _diagnose_result(self, image, values):
+        """リザルトの読み取りに不確かな点があったときと、判定内訳がプレー中の読み取りと食い違ったときに保存する。"""
+        if not self.config.diagnostics_enabled:
+            return
+        names = ("score", "cool", "great", "good", "bad", "combo")
+        read = {name: getattr(values, name, None) for name in names} if values is not None else {}
+        if values is None or not values.is_complete or values.notes:
+            note = "; ".join(values.notes) if values is not None and values.notes else "読み取りに不確かな点がありました"
+            self.diagnostics.add(KIND_RESULT, image, read, note=note if values is not None else "スコアパネルを検出できませんでした")
+        live = self._song_judge
+        if (
+            values is not None and values.is_complete and self._last_play_image is not None and live.notes > 0
+            and (live.cool, live.great, live.good, live.bad)
+            != (values.cool, values.great, values.good, values.bad)
+        ):
+            self.diagnostics.add(
+                KIND_JUDGE, self._last_play_image,
+                {"cool": live.cool, "great": live.great, "good": live.good, "bad": live.bad},
+                suggested={"cool": values.cool, "great": values.great, "good": values.good, "bad": values.bad},
+                note="プレー中に読んだ判定内訳が、リザルトの値と一致しませんでした",
+            )
+
+    def _process_result(self, image):
+        """リザルト画面の数値を読み、数フレーム連続で同じ値になったら記録する。"""
+        self._result_frames += 1
+        if not self._result_banner_id and (self._result_frames - 1) % _RESULT_BANNER_INTERVAL_FRAMES == 0:
+            self._result_banner_candidate, self._result_banner_stable, self._result_banner_id = self._track_banner(
+                image, self._result_banner_candidate, self._result_banner_stable
+            )
+        values = self.screen_reader.read_result_values(image)
+        # 「STAGE FAILED」の表示は数値より遅れて出たり、動いたりするため、一度でも検出したら覚えておく
+        if values is not None and values.failed is not None:
+            self._result_failed = bool(self._result_failed) or values.failed
+        # 「NEW RECORD!」の帯も表示が遅れたり点滅したりするため、一度でも検出したら覚えておく
+        if values is not None and values.new_record:
+            self._result_new_record = True
+
+        if values is not None and values.is_complete:
+            same = self._result_values is not None and values.key() == self._result_values.key()
+            self._result_stable = self._result_stable + 1 if same else 1
+            self._result_values = values
+            self._result_image = image
+            if self._result_stable >= _RESULT_STABLE_FRAMES:
+                self._save_result(image, values)
+                return
+        else:
+            self._result_stable = 0
+            if self._result_values is None:
+                self._result_image = image
+
+        if self._result_frames >= _RESULT_TIMEOUT_FRAMES:
+            if self._result_values is not None:
+                self._save_result(self._result_image, self._result_values)
+            else:
+                self._save_result(image, values)
+
+    def _identify_song_from_result_banner(self, image):
+        """リザルト画面のバナーで曲を確定する。プレー画面で曲を特定できなかった場合や、読み誤っていた場合も直る。"""
+        music_id = self._result_banner_id or self._read_banner_id(image)
+        sm = self.score_manager
+        if not music_id or music_id == sm.current_music_id:
+            return
+        if not sm.identify_music(music_id, sm.current_difficulty):
+            return
+        logger.info("リザルトのバナーで曲を確定しました: %s", sm.current_song_title)
+        self._set_last_played_song(sm.current_song_title, sm.current_difficulty, sm.current_genre)
+        self.btn_pick_song.hide()
+        self.lbl_chart_info.setStyleSheet("color: #80d8ff; font-weight: bold;")
+        self.lbl_chart_info.setText(sm.describe_current_chart())
+
+    def _save_result(self, image, values):
+        """リザルト画面の読み取り結果をスコア履歴に記録する。"""
+        self._result_pending = False
+        try:
+            self._identify_song_from_result_banner(image)
+            self._diagnose_result(image, values)
+            record = self.screen_reader.read_result(
+                image,
+                live_judge=self._song_judge,
+                options=self.score_manager.current_options,
+                title=self.score_manager.current_song_title,
+                level=self.score_manager.current_level,
+                difficulty=self.score_manager.current_difficulty,
+                values=values,
+            )
+            if self._result_failed is not None:
+                record.failed = self._result_failed
+            saved = self.score_manager.add_record(record)
+            if saved:
+                # プレー中の暫定値を捨て、リザルト画面の値を本日の打鍵数に反映する
+                self._check_date_rollover()
+                self._today_notes += record.cool + record.great + record.good
+                self._reset_song_judge()
+                self._update_display()
+                chart_info = f"[Lv{record.level} {record.difficulty_code}] " if record.level else f"[{record.difficulty_code}] "
+                msg = f"スコア保存: {chart_info}{record.title} | {record.score}点 ({record.options.to_summary()})"
+                self._statusbar.showMessage(msg, 6000)
+                self._show_comparison()
+                self._save_result_screenshot(image, record, values)
+
+            # 最後にプレイした曲の表示を更新
+            song_title = record.title if record.title != "Unknown" else self.score_manager.current_song_title
+            if song_title and song_title != "Unknown":
+                genre = record.genre or self.score_manager.current_genre
+                self._set_last_played_song(song_title, record.difficulty, genre)
+        except Exception as e:
+            logger.error("スコア保存処理エラー: %s", e)
+
+    def _show_comparison(self):
+        """今回のスコアと、それまでのベストとの比較をメインウィンドウに表示する。"""
+        comparison = self.score_manager.last_comparison
+        if comparison is None:
+            return
+        color = "#ffd600" if comparison.is_new_best else "#80d8ff"
+        self.lbl_chart_info.setStyleSheet(f"color: {color}; font-weight: bold;")
+        self.lbl_chart_info.setText(comparison.text())
+
+    def _open_screenshot_dir(self):
+        """スクリーンショットの保存先フォルダをエクスプローラーで開く。"""
+        folder = os.path.abspath(self.config.result_screenshot_dir)
+        try:
+            os.makedirs(folder, exist_ok=True)
+            os.startfile(folder)
+        except Exception:
+            logger.exception("スクリーンショットフォルダを開けませんでした: %s", folder)
+
+    def _save_result_screenshot(self, image, record, values):
+        """設定に応じて、記録したリザルト画面のスクリーンショットを保存する。"""
+        conds = self.config.result_screenshot_conditions
+        full_combo = record.clear_type in ("PERFECT", "FULLCOMBO")
+        # 自己ベスト更新 = 「NEW RECORD!」の表示があり、BEST SCORE の差分が + であること。
+        # 手元カメラ等で BEST SCORE 欄が読めなかったときは、帯の表示だけで判断する
+        diff = values.diff if values is not None else None
+        personal_best = self._result_new_record and (diff is None or diff > 0)
+        if not (
+            "all" in conds
+            or ("fullcombo" in conds and full_combo)
+            or ("perfect" in conds and record.clear_type == "PERFECT")
+            or ("best" in conds and personal_best)
+        ):
+            return
+        try:
+            folder = self.config.result_screenshot_dir
+            os.makedirs(folder, exist_ok=True)
+            played_at = datetime.strptime(record.timestamp, "%Y-%m-%d %H:%M:%S")
+            # ファイル名に使えない文字を置き換える
+            title = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", record.title).strip(" .") or "Unknown"
+            jpeg = self.config.result_screenshot_format == "jpeg"
+            ext = "jpg" if jpeg else "png"
+            name = f"{played_at:%Y%m%d_%H%M%S}_{title}_{record.difficulty_code}_{record.score}.{ext}"
+            path = os.path.join(folder, name)
+            if jpeg:
+                # JPEG はアルファチャンネルを持てないため RGB に変換する
+                image.convert("RGB").save(
+                    path, "JPEG", quality=self.config.result_screenshot_jpeg_quality
+                )
+            else:
+                image.save(path)
+            logger.info("リザルトのスクリーンショットを保存: %s", path)
+            # スコアビュワーから開けるよう、ファイル名をスコア記録に紐づける (フォルダは設定から合成する)
+            self.score_manager.set_screenshot_file(record, name)
+        except Exception as e:
+            logger.error("スクリーンショット保存エラー: %s", e)
+
+    def _manual_screenshot(self):
+        """現在の画面を、設定の保存先・形式でスクリーンショットとして保存する。"""
+        try:
+            image = self.obs_manager.read_frame()
+            if image is None:
+                self._statusbar.showMessage(self.ui.status.screenshot_no_frame, 6000)
+                return
+            folder = self.config.result_screenshot_dir
+            os.makedirs(folder, exist_ok=True)
+            jpeg = self.config.result_screenshot_format == "jpeg"
+            ext = "jpg" if jpeg else "png"
+            path = os.path.join(folder, f"{datetime.now():%Y%m%d_%H%M%S}_manual.{ext}")
+            if jpeg:
+                image.convert("RGB").save(
+                    path, "JPEG", quality=self.config.result_screenshot_jpeg_quality
+                )
+            else:
+                image.save(path)
+            logger.info("スクリーンショットを手動で保存: %s", path)
+            self._statusbar.showMessage(self.ui.status.screenshot_saved.format(path=path), 6000)
+        except Exception:
+            logger.error(traceback.format_exc())
+            self._statusbar.showMessage(self.ui.status.screenshot_failed, 6000)
+
+    def _format_last_played(self) -> str:
+        """設定の表記に従って、最後にプレイした曲の表示文字列を作る。"""
+        if self._last_played is None:
+            return self.ui.main_display.none_song
+        title, genre, difficulty = self._last_played
+        return format_song(title, difficulty, genre, self.config.last_song_display)
+
+    def _set_last_played_song(self, title: str, difficulty: str, genre: str = ""):
+        self._last_played = (title, genre, difficulty)
+        self._last_played_song = self._format_last_played()
+        self.lbl_last_song.setText(self._last_played_song)
+
+    def _reset_song_judge(self):
+        """現在の曲の判定内訳（プレー中の暫定値）を捨てる。"""
+        self.screen_reader.reset_judge()
+        self._song_judge = PopnJudge()
+
+    def _update_display(self):
+        self.lbl_today_notes.setText(f"{self._today_notes + self._song_judge.notes:,}")
+
+    def _update_uptime(self):
+        minutes, seconds = divmod(int(time.time() - self._start_time), 60)
+        hours, minutes = divmod(minutes, 60)
+        self.lbl_uptime.setText(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+
+    def _check_date_rollover(self):
+        now_date = datetime.now().strftime("%Y-%m-%d")
+        if now_date != self._today_date:
+            self._today_date = now_date
+            self._today_notes = self.score_manager.get_today_notes(now_date)
+            self._update_display()
+
+    def _update_cpu_affinity(self):
+        """Lively の起動を見つけたら CPU 割り当てを 1 コアに絞る（設定で有効な場合のみ）。"""
+        try:
+            cpu = self.cpu_affinity.update(
+                self.config.lively_single_cpu, self.config.direct_capture_exe
+            )
+            if cpu is not None:
+                self._statusbar.showMessage(f"Lively の CPU 割り当てを CPU{cpu} のみに変更しました", 6000)
+        except Exception:
+            logger.error(traceback.format_exc())
+
+    def _reset_counts(self):
+        self._today_notes = 0
+        self._reset_song_judge()
+        self._update_display()
+
+    # ------------------------------------------------------------------
+    # OBS トリガー
+    # ------------------------------------------------------------------
+
+    def _trigger_obs(self, event: str):
+        """OBS 自動制御トリガーを実行する。"""
+        try:
+            for setting in self.config.obs_control_settings:
+                if setting.get("trigger") != event:
+                    continue
+                action = setting.get("action", "")
+                if action == "start_recording":
+                    self.obs_manager.start_recording()
+                elif action == "stop_recording":
+                    self.obs_manager.stop_recording()
+                elif action == "start_streaming":
+                    self.obs_manager.start_streaming()
+                elif action == "stop_streaming":
+                    self.obs_manager.stop_streaming()
+                elif action == "switch_scene":
+                    scene = setting.get("scene", "")
+                    if scene:
+                        self.obs_manager.change_scene(scene)
+                elif action in ("show_source", "hide_source"):
+                    scene  = setting.get("scene", "")
+                    source = setting.get("source", "")
+                    if scene and source:
+                        enabled = (action == "show_source")
+                        self.obs_manager.set_source_visible(scene, source, enabled)
+                logger.info("OBS トリガー実行: event=%s action=%s", event, action)
+        except Exception:
+            logger.error(traceback.format_exc())
+
+    # ------------------------------------------------------------------
+    # メニューアクション
+    # ------------------------------------------------------------------
+
+    def _open_settings(self):
+        from src.config_dialog import ConfigDialog
+        dlg = ConfigDialog(self.config, self)
+        if dlg.exec():
+            self.config.save_config()
+            self.config.apply_log_settings()
+            self._apply_play_environment()
+            # キャプチャ方式の変更を反映
+            self._apply_obs_config()
+            # 最前面フラグの更新 (フラグを変えるとウィンドウが隠れるので表示し直す)
+            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, self.config.keep_on_top)
+            self.show()
+            # 最後にプレイした曲の表記変更を反映
+            self._last_played_song = self._format_last_played()
+            self.lbl_last_song.setText(self._last_played_song)
+
+    def _open_obs_settings(self):
+        from src.obs_dialog import OBSControlDialog
+        dlg = OBSControlDialog(self.config, self.obs_manager, self)
+        if dlg.exec():
+            # 接続設定が変わっている可能性があるので再接続
+            self._apply_obs_config()
+
+    def _open_score_history(self):
+        from src.score_dialog import ScoreHistoryDialog
+        dlg = ScoreHistoryDialog(self.score_manager, self, config=self.config)
+        dlg.exec()
+
+    def _open_stats(self):
+        from src.stats_dialog import StatsDialog
+        StatsDialog(self.score_manager, self).exec()
+
+    def _open_session_summary(self):
+        from src.stats_dialog import SessionSummaryDialog
+        SessionSummaryDialog(
+            self.score_manager, self._session_start, self, config=self.config
+        ).exec()
+
+    def _save_session_log(self):
+        """終了時に、このセッションの成績を CSV に 1 行追記する (プレーが無ければ何もしない)。"""
+        try:
+            summary = summarize_session(self.score_manager.records, self._session_start)
+            if summary.plays == 0:
+                return
+            folder = os.path.dirname(os.path.abspath(self.config.score_csv_path))
+            append_session_log(os.path.join(folder, "popn_session_log.csv"), summary)
+        except Exception:
+            logger.error(traceback.format_exc())
+
+    def _refresh_after_data_change(self):
+        """復元・インポートなどで履歴が変わったあと、メインウィンドウの表示を合わせる。"""
+        self._today_notes = self.score_manager.get_today_notes(self._today_date)
+        self._last_played = self.score_manager.get_last_played_song()
+        self._last_played_song = self._format_last_played()
+        self.lbl_last_song.setText(self._last_played_song)
+        self._update_display()
+
+    def _update_music_list(self):
+        from src.data_actions import update_music_list
+        if update_music_list(self, self.score_manager, self.config):
+            self._refresh_after_data_change()
+
+    def _update_music_list_from_url(self):
+        from src.data_actions import update_music_list_from_url
+        if update_music_list_from_url(self, self.score_manager, self.config):
+            self._refresh_after_data_change()
+
+    def _create_backup(self):
+        from src.data_actions import create_backup
+        create_backup(self, self.score_manager)
+
+    def _restore_backup(self):
+        from src.data_actions import restore_backup
+        if restore_backup(self, self.score_manager):
+            self._refresh_after_data_change()
+
+    def _import_csv(self):
+        from src.score_dialog import import_csv_with_dialog
+        if import_csv_with_dialog(self, self.score_manager):
+            self._refresh_after_data_change()
+
+    def _show_about(self):
+        QMessageBox.about(
+            self, self.ui.menu.about.replace("(&A)", "").rstrip("."),
+            f"{self.ui.window.main_title}\nバージョン {get_app_version()}",
+        )
+
+    def _open_diagnostics(self):
+        from src.diagnostics_dialog import DiagnosticsDialog
+        DiagnosticsDialog(self.diagnostics, self.score_manager, self).exec()
+
+    def _export_csv(self):
+        from src.score_dialog import export_csv_with_dialog
+        export_csv_with_dialog(self, self.score_manager)
+
+    # ------------------------------------------------------------------
+    # 終了処理
+    # ------------------------------------------------------------------
+
+    def closeEvent(self, event):
+        self._timer.stop()
+        self._affinity_timer.stop()
+        self._save_session_log()
+        # ウィンドウ位置・サイズを保存
+        geo = self.geometry()
+        self.config.main_window_x      = geo.x()
+        self.config.main_window_y      = geo.y()
+        self.config.main_window_width  = geo.width()
+        self.config.main_window_height = geo.height()
+        self.config.save_config()
+        self.obs_manager.disconnect_obs()
+        super().closeEvent(event)
+
+
+# -----------------------------------------------------------------------
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    app.setApplicationName("pop_lively_support_tool")
+    app.setApplicationDisplayName("pop'n music Lively サポートツール")
+    app.setWindowIcon(QIcon("src/icon.ico"))
+
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())

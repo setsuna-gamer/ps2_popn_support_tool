@@ -1,0 +1,74 @@
+{
+ "_comment": "リザルト画像の STAGE FAILED / NEW RECORD の正解 (tools/build_ps2_marks.py が読む)。項目の無い目印はその画像で使わない。STAGE FAILED が「ない」見本 (クリアしたリザルト) はまだ無い。 popn9 は STAGE FAILED が回転・拡縮する演出で、写真の背景の上に出るため、検出の対象にしない。",
+ "samples": [
+  {
+   "image": "popn10/result/150537",
+   "failed": true,
+   "new_record": true
+  },
+  {
+   "image": "popn10/result/150624",
+   "failed": true,
+   "new_record": false
+  },
+  {
+   "image": "popn10/result/161453",
+   "failed": true,
+   "new_record": false
+  },
+  {
+   "image": "popn11/result/151111",
+   "failed": true,
+   "new_record": false
+  },
+  {
+   "image": "popn11/result/151218",
+   "failed": true,
+   "new_record": true
+  },
+  {
+   "image": "popn12/result/151926",
+   "failed": true,
+   "new_record": true
+  },
+  {
+   "image": "popn12/result/151927",
+   "failed": true,
+   "new_record": true
+  },
+  {
+   "image": "popn12/result/152100",
+   "failed": true,
+   "new_record": true
+  },
+  {
+   "image": "popn12/result/152121",
+   "failed": true,
+   "new_record": false
+  },
+  {
+   "image": "popn13/result/153627",
+   "failed": true
+  },
+  {
+   "image": "popn13/result/153704",
+   "failed": true
+  },
+  {
+   "image": "popn13/result/153724",
+   "failed": true
+  },
+  {
+   "image": "popn14/result/154101",
+   "failed": true
+  },
+  {
+   "image": "popn14/result/154122",
+   "failed": true
+  },
+  {
+   "image": "popn14/result/154139",
+   "failed": true
+  }
+ ]
+}

@@ -40,11 +40,8 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
-# Claude Code のローカル設定・個人用の指示 (共有しない)
+# Claude Code のローカル設定
 .claude/settings.local.json
-CLAUDE.local.md
-AGENTS.local.md
-AGENT.local.md
 
 # ゲーム画面のキャプチャ
 screenshots/
@@ -55,3 +52,9 @@ tmp_scrape/
 
 # 公式サイトから取得したバナー画像 (配布しない)
 tmp_banners/
+tmp_ps2_songlist/
+tmp_ps2_banners/
+
+# エージェント用の個人・環境メモ (共有しない)
+CLAUDE.local.md
+AGENT.local.md

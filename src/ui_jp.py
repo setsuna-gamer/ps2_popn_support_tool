@@ -38,12 +38,11 @@ class UIText:
         select           = "選曲中"
         option           = "オプション"
         title            = "タイトル"
-        status           = "ステータス"
-        ticket           = "チケット"
         character_select = "キャラセレクト"
+        mode_select      = "モード選択"
+        freetraining     = "フリートレーニング"
         exit             = "終了画面"
         loading          = "ロード中"
-        retire_skipped   = "リタイアのためスコアを保存しませんでした"
         screenshot_saved = "スクリーンショットを保存しました: {path}"
         screenshot_failed = "スクリーンショットを保存できませんでした"
         screenshot_no_frame = "スクリーンショットを保存できません（画面を取得できていません）"
@@ -87,7 +86,13 @@ class UIText:
             "log フォルダ全体の容量の上限です。\n"
             "上限を超えると、古いログから自動的に削除します。"
         )
-        score_save_group                = "スコア保存時の条件"
+        play_env_group                  = "プレー環境 (スコアに記録)"
+        play_env_platform               = "プレー環境"
+        play_env_modernize              = "モダナイズパッチ (COOL 25ms) を適用している"
+        play_env_modernize_tip          = (
+            "スコアに、モダナイズパッチの有無を記録します。\n"
+            "パッチ有りは COOL の判定が 25ms になり、無しとは判定が違います。"
+        )
         update_check_mode               = "起動時の更新チェック"
         update_check_auto               = "新しいバージョンを自動で更新する"
         update_check_notify             = "更新内容を確認してから更新する"
@@ -112,11 +117,6 @@ class UIText:
             "曲を特定できなかったプレー画面、読み取りに不確かな点があったリザルト画面、判定内訳がリザルトと\n"
             "食い違ったプレー画面を diagnostics フォルダに保存します。保存したデータは、メニュー → データ →\n"
             "認識診断 で正解値を確定すると、テンプレート作成ツールのサンプルにできます。"
-        )
-        score_skip_retire               = "retire 時は保存しない"
-        score_skip_retire_tip           = (
-            "リタイアしたプレー（リザルト画面に「Retire」と表示されるプレー）のスコアを記録しません。\n"
-            "打鍵数は本日の打鍵数に加算します。"
         )
         screenshot_group                = "リザルトのスクリーンショット"
         screenshot_cond                 = "保存条件:"
@@ -161,6 +161,9 @@ class UIText:
     class main_display:
         group          = "ステータス"
         current_mode   = "現在のモード"
+        current_title  = "作品"
+        play_env       = "環境"
+        title_unknown  = "判定中..."
         uptime         = "起動時間"
         today_notes    = "本日の打鍵数"
         last_song      = "最後にプレイした曲"
