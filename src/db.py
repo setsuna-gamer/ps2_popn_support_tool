@@ -22,6 +22,7 @@ from src.classes import (
     difficulty_code,
     unescape_formula,
 )
+from src.play_env import parse_modernize, platform_code
 from src.logger import get_logger
 from src.option_master import (
     OPTION_DEFAULTS,
@@ -47,6 +48,10 @@ CSV_HEADERS = [
     "COMBO",
     *(OPTION_LABELS[key] for key in OPTION_KEYS),
     "プレー日時",
+    "作品",
+    "環境",
+    "モダナイズ",
+    "クリア失敗",
     "music_id",
     "修正済",
     "スクリーンショット",
@@ -55,7 +60,7 @@ CSV_HEADERS = [
 # scores テーブルに保存する列 (id / modified 以外)。INSERT の列順
 _SCORE_COLUMNS = (
     "music_id", "difficulty", "score", "cool", "great", "good", "bad", "combo",
-    "options_summary", *OPTION_KEYS, "played_at",
+    "options_summary", *OPTION_KEYS, "title_id", "platform", "modernize_patch", "failed", "played_at",
 )
 _INSERT_SCORE_SQL = (
     f"INSERT INTO scores ({', '.join(_SCORE_COLUMNS)})"
@@ -104,6 +109,10 @@ _SCORES_ADDED_COLUMNS = (
     ("ojama2_zutto", "TEXT DEFAULT 'OFF'"),
     ("screenshot_file", "TEXT DEFAULT ''"),  # リザルトのスクリーンショットのファイル名 (無ければ空)
     ("ocr_title", "TEXT DEFAULT ''"),  # プレー画面から OCR で読んだ曲名 (未照合)
+    ("title_id", "TEXT DEFAULT ''"),  # プレーした作品 (popn7 など。src/titles.py)。不明なら空
+    ("platform", "TEXT DEFAULT ''"),  # プレー環境 (real / pcsx2 / other。src/play_env.py)。不明なら空
+    ("modernize_patch", "INTEGER"),  # モダナイズパッチ (COOL 25ms) の有無。1 / 0、不明は NULL
+    ("failed", "INTEGER"),  # クリア失敗 (STAGE FAILED) か。1 / 0、判定できなかったものは NULL
 )
 
 _MUSIC_COLUMNS = "music_id, title, genre, artist, ver, easy, normal, hyper, ex"
@@ -123,6 +132,10 @@ _CSV_DEFAULTS = {
     "music_id": "",
     "modified": "",
     "screenshot_file": "",
+    "title_id": "",
+    "platform": "",
+    "modernize_patch": None,
+    "failed": None,
     **OPTION_DEFAULTS,
 }
 # 列名付き CSV: 項目 → 列名の候補 (先頭が現行の列名、以降は旧形式の列名)
@@ -138,6 +151,10 @@ _CSV_COLUMN_NAMES = {
     "combo": ("COMBO",),
     "options_summary": ("使用オプション",),
     "played_at": ("プレー日時",),
+    "title_id": ("作品",),
+    "platform": ("環境",),
+    "modernize_patch": ("モダナイズ",),
+    "failed": ("クリア失敗",),
     "music_id": ("music_id",),
     "modified": ("修正済",),
     "screenshot_file": ("スクリーンショット",),
@@ -215,6 +232,11 @@ def _parse_csv_row(row: list[str], named_layout: dict[str, int] | None) -> dict 
         fields[field] = int(value) if value.isdigit() else 0
     fields["title"] = unescape_formula(fields["title"])
     fields["modified"] = 1 if fields["modified"].strip() in ("1", "True", "true") else 0
+    fields["platform"] = platform_code(fields["platform"])
+    patch = parse_modernize(fields["modernize_patch"])
+    fields["modernize_patch"] = None if patch is None else int(patch)
+    failed = parse_modernize(fields["failed"])   # 1 / 0 / 空欄 → True / False / None (あり・なしの表記も同じ読み方)
+    fields["failed"] = None if failed is None else int(failed)
     if fields["hispeed"] == "OFF":
         fields["hispeed"] = "1.0"   # 旧形式は等速を OFF と記録していた
     if not fields["options_summary"]:
@@ -315,7 +337,8 @@ class PopnDatabase:
                 hyper INTEGER,
                 ex INTEGER,
                 pack TEXT DEFAULT '',
-                banner TEXT DEFAULT ''
+                banner TEXT DEFAULT '',
+                titles TEXT DEFAULT ''
             );
             """
         )
@@ -323,6 +346,9 @@ class PopnDatabase:
         if "banner" not in columns:
             # バナー画像の特徴量 (src/banner_reader.py)。公式サイトのバナーから曲リストの生成時に作る
             self._conn.execute("ALTER TABLE musics ADD COLUMN banner TEXT DEFAULT ''")
+        if "titles" not in columns:
+            # 収録されている作品 (title_id をカンマで並べたもの。例 "popn7,besthits")。PS2 版の曲リストから取り込む
+            self._conn.execute("ALTER TABLE musics ADD COLUMN titles TEXT DEFAULT ''")
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_musics_title ON musics (title);")
 
     def _score_column_names(self) -> set[str]:
@@ -481,6 +507,8 @@ class PopnDatabase:
             bpm = str(item.get("bpm", "")).strip()
             pack = str(item.get("pack", "")).strip()
             banner = str(item.get("banner", "")).strip()
+            titles = item.get("titles", "")
+            titles = ",".join(titles) if isinstance(titles, list) else str(titles).strip()
 
             key = (title, genre, ver, artist)
             item_uuid = item.get("music_id") or item.get("uuid")
@@ -502,9 +530,11 @@ class PopnDatabase:
                     artist,
                     ver,
                     bpm,
-                    *(_to_level(item.get(column)) for column in ("easy", "normal", "hyper", "ex")),
+                    # PS2 版の曲リストは、当時の基準のレベルを *_old に持つ (src/classes.py の難易度コードと同じ並び)
+                    *(_to_level(item.get(column, item.get(f"{column}_old"))) for column in ("easy", "normal", "hyper", "ex")),
                     pack,
                     banner,
+                    titles,
                 )
             )
 
@@ -512,8 +542,8 @@ class PopnDatabase:
             self._conn.executemany(
                 """
                 INSERT INTO musics (
-                    music_id, title, genre, artist, ver, bpm, easy, normal, hyper, ex, pack, banner
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    music_id, title, genre, artist, ver, bpm, easy, normal, hyper, ex, pack, banner, titles
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(music_id) DO UPDATE SET
                     title = excluded.title,
                     genre = excluded.genre,
@@ -525,7 +555,8 @@ class PopnDatabase:
                     hyper = excluded.hyper,
                     ex = excluded.ex,
                     pack = excluded.pack,
-                    banner = CASE WHEN excluded.banner != '' THEN excluded.banner ELSE musics.banner END;
+                    banner = CASE WHEN excluded.banner != '' THEN excluded.banner ELSE musics.banner END,
+                    titles = CASE WHEN excluded.titles != '' THEN excluded.titles ELSE musics.titles END;
                 """,
                 records_to_insert,
             )
@@ -638,6 +669,17 @@ class PopnDatabase:
         column = DIFFICULTY_LEVEL_COLUMNS.get(difficulty_code(difficulty))
         return {**music, "level": music[column] if column and music[column] is not None else ""}
 
+    def ps2_song_rows(self) -> list[dict]:
+        """PS2 版の曲 (収録作品を持つ曲) の、画面からの特定に使う情報。
+        {"music_id", "title", "artist", "titles": [title_id, ...], "banner": 特徴量の文字列}
+        """
+        with self._conn:
+            rows = self._conn.execute(
+                "SELECT music_id, title, artist, titles, banner FROM musics WHERE titles != ''"
+            ).fetchall()
+        return [{"music_id": r["music_id"], "title": r["title"], "artist": r["artist"] or "",
+                 "titles": [x for x in r["titles"].split(",") if x], "banner": r["banner"] or ""} for r in rows]
+
     def match_banner(self, feature) -> dict | None:
         """オプション画面から読んだバナーの特徴量に最も近い曲を返す (確信が持てなければ None)。
 
@@ -743,6 +785,10 @@ class PopnDatabase:
             record.combo,
             record.options.to_summary(),
             *(getattr(record.options, key) for key in OPTION_KEYS),
+            record.title_id,
+            record.platform,
+            None if record.modernize_patch is None else int(record.modernize_patch),
+            None if record.failed is None else int(record.failed),
             record.timestamp,
         )
 
@@ -882,7 +928,11 @@ class PopnDatabase:
                     s.played_at,
                     COALESCE(s.modified, 0) AS modified,
                     COALESCE(s.screenshot_file, '') AS screenshot_file,
-                    COALESCE(s.ocr_title, '') AS ocr_title
+                    COALESCE(s.ocr_title, '') AS ocr_title,
+                    COALESCE(s.title_id, '') AS title_id,
+                    COALESCE(s.platform, '') AS platform,
+                    s.modernize_patch AS modernize_patch,
+                    s.failed AS failed
                 FROM scores s
                 LEFT JOIN musics m ON s.music_id = m.music_id
                 ORDER BY s.played_at ASC, s.id ASC;
@@ -914,6 +964,10 @@ class PopnDatabase:
                 modified=bool(r["modified"]),
                 screenshot_file=r["screenshot_file"],
                 ocr_title=r["ocr_title"],
+                title_id=r["title_id"],
+                platform=r["platform"],
+                modernize_patch=parse_modernize(r["modernize_patch"]),
+                failed=parse_modernize(r["failed"]),
             ))
         return records
 

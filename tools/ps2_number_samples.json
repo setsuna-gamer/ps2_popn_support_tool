@@ -1,0 +1,740 @@
+{
+ "_comment": "PS2 版の数字テンプレート (src/ps2_digit_templates.json) の正解値。tools/build_ps2_digit_templates.py が読む。image は <title_id>/<画面フォルダ>/<ファイル名の末尾の時刻>、values は画面に表示されている数字列 (ゼロ埋めはそのまま)。",
+ "samples": [
+  {
+   "image": "popn7/result/105604",
+   "values": {
+    "cool": "0047",
+    "great": "0011",
+    "good": "0025",
+    "bad": "0087",
+    "combo": "0000",
+    "stage_score": "011311",
+    "total_score": "000000"
+   }
+  },
+  {
+   "image": "popn8/result/143318",
+   "values": {
+    "cool": "0017",
+    "great": "0004",
+    "good": "0042",
+    "bad": "0117",
+    "combo": "0017",
+    "stage_score": "020561",
+    "total_score": "020561"
+   }
+  },
+  {
+   "image": "popn8/result/143448",
+   "values": {
+    "cool": "0013",
+    "great": "0002",
+    "good": "0034",
+    "bad": "0516",
+    "combo": "0001",
+    "stage_score": "004046",
+    "total_score": "004046"
+   }
+  },
+  {
+   "image": "popn9/result/144543",
+   "values": {
+    "cool": "0006",
+    "great": "0006",
+    "good": "0013",
+    "bad": "0182",
+    "combo": "0001",
+    "stage_score": "007661",
+    "total_score": "015322"
+   }
+  },
+  {
+   "image": "popn9/result/144544",
+   "values": {
+    "cool": "0006",
+    "great": "0006",
+    "good": "0013",
+    "bad": "0182",
+    "combo": "0001",
+    "stage_score": "007661",
+    "total_score": "015322"
+   }
+  },
+  {
+   "image": "popn9/result/144639",
+   "values": {
+    "cool": "0015",
+    "great": "0012",
+    "good": "0034",
+    "bad": "0050",
+    "combo": "0014",
+    "stage_score": "018877",
+    "total_score": "037754"
+   }
+  },
+  {
+   "image": "popn11/result/151111",
+   "values": {
+    "cool": "0018",
+    "great": "0024",
+    "good": "0074",
+    "bad": "0130",
+    "combo": "0008",
+    "stage_score": "017938",
+    "total_score": "017938"
+   }
+  },
+  {
+   "image": "popn11/result/151218",
+   "values": {
+    "cool": "0029",
+    "great": "0005",
+    "good": "0022",
+    "bad": "0137",
+    "combo": "0037",
+    "stage_score": "021623",
+    "total_score": "021623"
+   }
+  },
+  {
+   "image": "popn12/result/151926",
+   "values": {
+    "cool": "9",
+    "great": "9",
+    "good": "9",
+    "bad": "125",
+    "combo": "2",
+    "stage_score": "12684",
+    "total_score": "12684"
+   }
+  },
+  {
+   "image": "popn12/result/151927",
+   "values": {
+    "cool": "9",
+    "great": "9",
+    "good": "9",
+    "bad": "125",
+    "combo": "2",
+    "stage_score": "12684",
+    "total_score": "12684"
+   }
+  },
+  {
+   "image": "popn12/result/152100",
+   "values": {
+    "cool": "109",
+    "great": "29",
+    "good": "156",
+    "bad": "114",
+    "combo": "76",
+    "stage_score": "47333",
+    "total_score": "47333"
+   }
+  },
+  {
+   "image": "popn12/result/152121",
+   "values": {
+    "cool": "0",
+    "great": "0",
+    "good": "0",
+    "bad": "16",
+    "combo": "0",
+    "stage_score": "0",
+    "total_score": "0"
+   }
+  },
+  {
+   "image": "popn13/result/153627",
+   "values": {
+    "cool": "52",
+    "great": "46",
+    "good": "28",
+    "bad": "64",
+    "combo": "54",
+    "stage_score": "19958",
+    "total_score": "19958"
+   }
+  },
+  {
+   "image": "popn13/result/153704",
+   "values": {
+    "cool": "12",
+    "great": "11",
+    "good": "33",
+    "bad": "205",
+    "combo": "3",
+    "stage_score": "3095",
+    "total_score": "3095"
+   }
+  },
+  {
+   "image": "popn13/result/153724",
+   "values": {
+    "cool": "7",
+    "great": "3",
+    "good": "13",
+    "bad": "161",
+    "combo": "1",
+    "stage_score": "1074",
+    "total_score": "1074"
+   }
+  },
+  {
+   "image": "popn14/result/154101",
+   "values": {
+    "cool": "22",
+    "great": "32",
+    "good": "94",
+    "bad": "108",
+    "combo": "29",
+    "stage_score": "17336",
+    "total_score": "17336"
+   }
+  },
+  {
+   "image": "popn14/result/154122",
+   "values": {
+    "cool": "1",
+    "great": "0",
+    "good": "0",
+    "bad": "43",
+    "combo": "0",
+    "stage_score": "154",
+    "total_score": "154"
+   }
+  },
+  {
+   "image": "popn14/result/154139",
+   "values": {
+    "cool": "1",
+    "great": "2",
+    "good": "7",
+    "bad": "57",
+    "combo": "1",
+    "stage_score": "625",
+    "total_score": "625"
+   }
+  },
+  {
+   "image": "besthits/result/145950",
+   "values": {
+    "cool": "0011",
+    "great": "0001",
+    "good": "0009",
+    "bad": "0136",
+    "combo": "0000",
+    "stage_score": "002953",
+    "total_score": "002953"
+   }
+  },
+  {
+   "image": "besthits/result/150042",
+   "values": {
+    "cool": "0021",
+    "great": "0022",
+    "good": "0051",
+    "bad": "0160",
+    "combo": "0000",
+    "stage_score": "012059",
+    "total_score": "012059"
+   }
+  },
+  {
+   "image": "popn10/result/150537",
+   "values": {
+    "cool": "0003",
+    "great": "0003",
+    "good": "0009",
+    "bad": "0176",
+    "combo": "0001",
+    "stage_score": "004627",
+    "total_score": "004627"
+   }
+  },
+  {
+   "image": "popn10/result/150624",
+   "values": {
+    "cool": "0027",
+    "great": "0001",
+    "good": "0010",
+    "bad": "0056",
+    "combo": "0025",
+    "stage_score": "010856",
+    "total_score": "010856"
+   }
+  },
+  {
+   "image": "popn10/result/161453",
+   "values": {
+    "cool": "0044",
+    "great": "0011",
+    "good": "0076",
+    "bad": "0047",
+    "combo": "0014",
+    "stage_score": "017542",
+    "total_score": "017542"
+   }
+  },
+  {
+   "image": "popn11/play/151027",
+   "values": {
+    "bad": "0000",
+    "good": "0000",
+    "great": "0000",
+    "cool": "0000"
+   }
+  },
+  {
+   "image": "popn11/play/151050",
+   "values": {
+    "bad": "0060",
+    "good": "0047",
+    "great": "0017",
+    "cool": "0015"
+   }
+  },
+  {
+   "image": "popn11/play/151052",
+   "values": {
+    "bad": "0069",
+    "good": "0047",
+    "great": "0017",
+    "cool": "0015"
+   }
+  },
+  {
+   "image": "popn11/play/151057",
+   "values": {
+    "bad": "0087",
+    "good": "0056",
+    "great": "0019",
+    "cool": "0015"
+   }
+  },
+  {
+   "image": "popn11/play/151103",
+   "values": {
+    "bad": "0109",
+    "good": "0065",
+    "great": "0022",
+    "cool": "0016"
+   }
+  },
+  {
+   "image": "popn11/play/151108",
+   "values": {
+    "bad": "0124",
+    "good": "0074",
+    "great": "0024",
+    "cool": "0018"
+   }
+  },
+  {
+   "image": "popn11/play/151141",
+   "values": {
+    "bad": "0093",
+    "good": "0009",
+    "great": "0000",
+    "cool": "0002"
+   }
+  },
+  {
+   "image": "popn11/play/151143",
+   "values": {
+    "bad": "0104",
+    "good": "0010",
+    "great": "0000",
+    "cool": "0002"
+   }
+  },
+  {
+   "image": "popn11/play/151204",
+   "values": {
+    "bad": "0113",
+    "good": "0020",
+    "great": "0004",
+    "cool": "0027"
+   }
+  },
+  {
+   "image": "popn11/play/151206",
+   "values": {
+    "bad": "0115",
+    "good": "0022",
+    "great": "0004",
+    "cool": "0028"
+   }
+  },
+  {
+   "image": "popn11/play/151209",
+   "values": {
+    "bad": "0129",
+    "good": "0022",
+    "great": "0005",
+    "cool": "0029"
+   }
+  },
+  {
+   "image": "popn11/play/151212",
+   "values": {
+    "bad": "0137",
+    "good": "0022",
+    "great": "0005",
+    "cool": "0029"
+   }
+  },
+  {
+   "image": "popn13/play/153547",
+   "values": {
+    "bad": "0000",
+    "good": "0000",
+    "great": "0000",
+    "cool": "0000"
+   }
+  },
+  {
+   "image": "popn13/play/153548",
+   "values": {
+    "bad": "0002",
+    "good": "0000",
+    "great": "0000",
+    "cool": "0000"
+   }
+  },
+  {
+   "image": "popn13/play/153550",
+   "values": {
+    "bad": "0015",
+    "good": "0002",
+    "great": "0001",
+    "cool": "0000"
+   }
+  },
+  {
+   "image": "popn13/play/153604",
+   "values": {
+    "bad": "0055",
+    "good": "0014",
+    "great": "0023",
+    "cool": "0019"
+   }
+  },
+  {
+   "image": "popn13/play/153614",
+   "values": {
+    "bad": "0059",
+    "good": "0026",
+    "great": "0042",
+    "cool": "0043"
+   }
+  },
+  {
+   "image": "popn13/play/153621",
+   "values": {
+    "bad": "0061",
+    "good": "0028",
+    "great": "0046",
+    "cool": "0052"
+   }
+  },
+  {
+   "image": "popn13/play/153644",
+   "values": {
+    "bad": "0000",
+    "good": "0000",
+    "great": "0000",
+    "cool": "0000"
+   }
+  },
+  {
+   "image": "popn13/play/153645",
+   "values": {
+    "bad": "0000",
+    "good": "0000",
+    "great": "0000",
+    "cool": "0000"
+   }
+  },
+  {
+   "image": "popn13/play/153646",
+   "values": {
+    "bad": "0000",
+    "good": "0000",
+    "great": "0000",
+    "cool": "0000"
+   }
+  },
+  {
+   "image": "popn13/play/153652",
+   "values": {
+    "bad": "0077",
+    "good": "0011",
+    "great": "0005",
+    "cool": "0004"
+   }
+  },
+  {
+   "image": "popn13/play/153654",
+   "values": {
+    "bad": "0107",
+    "good": "0018",
+    "great": "0006",
+    "cool": "0006"
+   }
+  },
+  {
+   "image": "popn13/play/153656",
+   "values": {
+    "bad": "0131",
+    "good": "0024",
+    "great": "0008",
+    "cool": "0007"
+   }
+  },
+  {
+   "image": "popn13/play/153657",
+   "values": {
+    "bad": "0156",
+    "good": "0024",
+    "great": "0009",
+    "cool": "0009"
+   }
+  },
+  {
+   "image": "popn13/play/153659",
+   "values": {
+    "bad": "0191",
+    "good": "0031",
+    "great": "0011",
+    "cool": "0012"
+   }
+  },
+  {
+   "image": "popn13/play/153715",
+   "values": {
+    "bad": "0009",
+    "good": "0002",
+    "great": "0000",
+    "cool": "0000"
+   }
+  },
+  {
+   "image": "popn13/play/153718",
+   "values": {
+    "bad": "0091",
+    "good": "0010",
+    "great": "0001",
+    "cool": "0004"
+   }
+  },
+  {
+   "image": "popn13/play/153719",
+   "values": {
+    "bad": "0125",
+    "good": "0013",
+    "great": "0003",
+    "cool": "0007"
+   }
+  },
+  {
+   "image": "popn13/play/153721",
+   "values": {
+    "bad": "0155",
+    "good": "0013",
+    "great": "0003",
+    "cool": "0007"
+   }
+  },
+  {
+   "image": "besthits/play/145913",
+   "values": {
+    "bad": "0015",
+    "good": "0000",
+    "great": "0000",
+    "cool": "0000"
+   }
+  },
+  {
+   "image": "besthits/play/145933",
+   "values": {
+    "bad": "0091",
+    "good": "0008",
+    "great": "0000",
+    "cool": "0010"
+   }
+  },
+  {
+   "image": "besthits/play/145939",
+   "values": {
+    "bad": "0127",
+    "good": "0009",
+    "great": "0001",
+    "cool": "0011"
+   }
+  },
+  {
+   "image": "besthits/play/150036",
+   "values": {
+    "bad": "0132",
+    "good": "0051",
+    "great": "0022",
+    "cool": "0021"
+   }
+  },
+  {
+   "image": "besthits/play/150038",
+   "values": {
+    "bad": "0156",
+    "good": "0051",
+    "great": "0022",
+    "cool": "0021"
+   }
+  },
+  {
+   "image": "popn9/play/144426",
+   "values": {
+    "bad": "0000",
+    "good": "0000",
+    "great": "0000",
+    "cool": "0000"
+   }
+  },
+  {
+   "image": "popn9/play/144429",
+   "values": {
+    "bad": "0000",
+    "good": "0000",
+    "great": "0000",
+    "cool": "0000"
+   }
+  },
+  {
+   "image": "popn9/play/144536",
+   "values": {
+    "bad": "0182",
+    "good": "0013",
+    "great": "0006",
+    "cool": "0006"
+   }
+  },
+  {
+   "image": "popn9/play/144536_(2)",
+   "values": {
+    "bad": "0182",
+    "good": "0013",
+    "great": "0006",
+    "cool": "0006"
+   }
+  },
+  {
+   "image": "popn9/play/144607",
+   "values": {
+    "bad": "0012",
+    "good": "0010",
+    "great": "0001",
+    "cool": "0004"
+   }
+  },
+  {
+   "image": "popn9/play/144613",
+   "values": {
+    "bad": "0016",
+    "good": "0012",
+    "great": "0001",
+    "cool": "0005"
+   }
+  },
+  {
+   "image": "popn9/play/144629",
+   "values": {
+    "bad": "0032",
+    "good": "0027",
+    "great": "0009",
+    "cool": "0013"
+   }
+  },
+  {
+   "image": "popn7/play/105554",
+   "values": {
+    "bad": "0071",
+    "good": "0025",
+    "great": "0011",
+    "cool": "0047"
+   }
+  },
+  {
+   "image": "popn8/play/143300",
+   "values": {
+    "bad": "0092",
+    "good": "0041",
+    "great": "0004",
+    "cool": "0015"
+   }
+  },
+  {
+   "image": "popn8/play/143439",
+   "values": {
+    "bad": "0443",
+    "good": "0034",
+    "great": "0002",
+    "cool": "0013"
+   }
+  },
+  {
+   "image": "popn12/play/151958",
+   "values": {
+    "bad": "0000",
+    "good": "0003",
+    "great": "0002",
+    "cool": "0009"
+   }
+  },
+  {
+   "image": "popn14/play/154055",
+   "values": {
+    "bad": "0104",
+    "good": "0092",
+    "great": "0032",
+    "cool": "0022"
+   }
+  },
+  {
+   "image": "popn10/play/150527",
+   "values": {
+    "bad": "0176",
+    "good": "0009",
+    "great": "0003",
+    "cool": "0003"
+   }
+  },
+  {
+   "image": "popn10/play/150548",
+   "values": {
+    "bad": "0000",
+    "good": "0000",
+    "great": "0000",
+    "cool": "0000"
+   }
+  },
+  {
+   "image": "popn10/play/150550",
+   "values": {
+    "bad": "0001",
+    "good": "0000",
+    "great": "0000",
+    "cool": "0000"
+   }
+  },
+  {
+   "image": "popn10/play/150619",
+   "values": {
+    "bad": "0056",
+    "good": "0010",
+    "great": "0001",
+    "cool": "0027"
+   }
+  }
+ ]
+}

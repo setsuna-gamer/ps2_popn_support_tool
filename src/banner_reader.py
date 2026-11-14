@@ -1,15 +1,10 @@
-"""pop'n music Lively オプション選択画面・リザルト画面の曲バナーによる曲の特定
+"""曲バナーの特徴量 (16x4 の RGB サムネイル) と、その相関による照合
 
-読み取り方針:
-    1. オプション選択画面 (設定を開いていない状態) とリザルト画面の中央上に、選んだ曲のバナーが
-       大きく表示される (縦位置はリザルトのほうが 30px ほど下)。
-       公式サイトの楽曲一覧にある同じバナー画像から作った特徴量 (popn_music_list.json の banner 列) と照合する。
-    2. バナーは黒い縁取りに囲まれている。キャプチャ方式によって縦位置・縦倍率が変わるので、
-       縁取りを手がかりにバナーの位置を動的に検出する。
-    3. バナーを小さな RGB サムネイルにして、明るさの違いに強い相関で最も近い曲を選ぶ。
-       2 位との差が小さいときは曲を決めない (別の曲に誤認するより、曲名 OCR に任せる)。
+曲リスト (ps2_music_list.json) の `banner` 列は、バナー画像から作ったこの特徴量。内積がそのまま相関になる。
+PS2 版の画面 (オプション・リザルト) からのバナーの切り出しと、作品ごとの基準は `src/ps2_banner.py`。
 
-特徴量の作り方 (banner_feature) は tools / generate_music_list.py も使うので、変えたら曲リストを作り直すこと。
+特徴量の作り方 (banner_feature) は tools / generate_music_list.py / generate_ps2_music_list.py も使うので、
+変えたら曲リストを作り直すこと。
 """
 from __future__ import annotations
 
@@ -18,12 +13,9 @@ import base64
 import numpy as np
 from PIL import Image
 
-from src.define import PosBanner
-
 FEATURE_W = 16
 FEATURE_H = 4
 _INSET = 0.025          # 縁取りの内側の余白 (バナーの幅・高さに対する比率)
-_BLACK_TH = 50          # 縁取りとみなす明るさ (RGB の最大値)
 
 MIN_SCORE = 0.80        # 最も近い曲の相関がこれ未満なら特定しない
 MIN_MARGIN = 0.04       # 2 位との相関の差がこれ未満なら特定しない
@@ -31,12 +23,6 @@ MIN_MARGIN = 0.04       # 2 位との相関の差がこれ未満なら特定し�
 # その場合は、2 位との差が十分大きいときだけ採用する
 LOW_SCORE = 0.60
 LOW_SCORE_MARGIN = 0.15
-
-
-def _runs(flags: np.ndarray) -> list[tuple[int, int]]:
-    padded = np.concatenate(([False], flags, [False]))
-    edges = np.flatnonzero(padded[1:] != padded[:-1])
-    return [(int(edges[i]), int(edges[i + 1])) for i in range(0, len(edges), 2)]
 
 
 # ----------------------------------------------------------------------
@@ -80,65 +66,6 @@ def decode_feature(s: str) -> np.ndarray | None:
     if q.size != FEATURE_W * FEATURE_H * 3:
         return None
     return _normalize(q.astype(np.float32) / 255 - 0.5)
-
-
-# ----------------------------------------------------------------------
-# 画面からの切り出し
-# ----------------------------------------------------------------------
-
-def locate_banner(arr: np.ndarray) -> tuple[int, int, int, int] | None:
-    """バナー (縁取りの内側) の (x0, y0, x1, y1) を返す。見つからなければ None。
-
-    黒い縁取りの上辺・下辺は、バナーの幅いっぱいに続く黒い横線になる。
-    リザルト画面では上辺がランクの演出などで途切れることがあるので、上辺・下辺のどちらかが
-    幅いっぱいに続いていれば、もう一方は途切れていてもよい。
-    """
-    bx0, bx1 = PosBanner.SEARCH_X
-    by0, by1 = PosBanner.SEARCH_Y
-    black = arr[by0:by1, bx0:bx1].max(axis=2) < _BLACK_TH
-    lo, hi = PosBanner.WIDTH
-    lines = []
-    for y in range(black.shape[0]):
-        runs = [r for r in _runs(black[y]) if PosBanner.LINE_MIN <= r[1] - r[0] <= hi + 20]
-        if runs:
-            lines.append((y, max(runs, key=lambda r: r[1] - r[0])))
-    if not lines:
-        return None
-
-    # 連続する行をまとめて「線」にする
-    groups: list[list[tuple[int, tuple[int, int]]]] = []
-    for item in lines:
-        if groups and item[0] - groups[-1][-1][0] <= 1:
-            groups[-1].append(item)
-        else:
-            groups.append([item])
-
-    h_lo, h_hi = PosBanner.HEIGHT
-    for i, top in enumerate(groups):
-        for bottom in groups[i + 1:]:
-            y0, y1 = top[-1][0] + 1, bottom[0][0]
-            if not h_lo <= y1 - y0 <= h_hi:
-                continue
-            full = [g[1] for g in top + bottom if lo <= g[1][1] - g[1][0]]
-            if not full:
-                continue
-            xs0 = int(np.median([r[0] for r in full]))
-            xs1 = int(np.median([r[1] for r in full]))
-            thickness = len(top)   # 左右の縁取りも上辺と同じ太さとみなす
-            return bx0 + xs0 + thickness, by0 + y0, bx0 + xs1 - thickness, by0 + y1
-    return None
-
-
-def read_banner(image: Image.Image) -> np.ndarray | None:
-    """オプション選択画面・リザルト画面 (1920x1080) からバナーの特徴量を作る。バナーが見つからなければ None。"""
-    arr = np.asarray(image.convert("RGB"))
-    if arr.shape[0] < 1080 or arr.shape[1] < 1920:
-        return None
-    box = locate_banner(arr)
-    if box is None:
-        return None
-    x0, y0, x1, y1 = box
-    return banner_feature(Image.fromarray(arr[y0:y1, x0:x1]))
 
 
 # ----------------------------------------------------------------------

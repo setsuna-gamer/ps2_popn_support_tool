@@ -20,11 +20,15 @@ class ScoreManager:
         self,
         db_path: str = "popn.db",
         csv_path: str = "popn_score.csv",
-        music_json_path: str = "popn_music_list.json",
+        music_json_path: str = "",
     ):
         self.db_path = db_path
         self.csv_path = csv_path
+        # 既定の曲リストは PS2 版の静的な曲リスト (収録作品・PS2 当時のレベルを持つ)。無ければ従来の popn_music_list.json
+        if not music_json_path:
+            music_json_path = "ps2_music_list.json" if os.path.exists("ps2_music_list.json") else "popn_music_list.json"
         self.music_json_path = music_json_path
+        self._ps2_songs = None   # 画面から曲を特定する索引 (src/ps2_songs.py)。初回に曲テーブルから作る
 
         self.db = PopnDatabase(self.db_path)
         self.records: list[PopnScoreRecord] = []
@@ -36,6 +40,12 @@ class ScoreManager:
         self.current_difficulty: str = ""
         self.current_ocr_text: str = ""
         """プレー画面から OCR で読んだ曲名 (未照合)"""
+        self.current_platform: str = ""
+        """プレー環境 (real / pcsx2 / other)。設定から反映する。スコア記録に付く"""
+        self.current_modernize_patch: bool | None = None
+        """モダナイズパッチ (COOL 25ms) の有無。設定から反映する。スコア記録に付く"""
+        self.current_title_id: str = ""
+        """いまプレーしている作品 (popn7 など)。曲ごとには初期化せず、作品が変わるまで保持する"""
         self.last_unidentified_record: PopnScoreRecord | None = None
         """直近に保存したスコアが曲を特定できていないもの (特定できていれば None)"""
         self._last_saved_time: float = 0.0
@@ -70,6 +80,17 @@ class ScoreManager:
         self.current_options = self.db.normalize_options(options)
         logger.info("使用オプション更新: %s", options.to_summary())
 
+    def set_play_environment(self, platform: str, modernize_patch: bool | None) -> None:
+        """プレー環境とモダナイズパッチの有無を設定する (設定の読み込み・変更時に呼ぶ)。以後のスコア記録に付く。"""
+        self.current_platform = platform
+        self.current_modernize_patch = modernize_patch
+
+    def set_current_title_id(self, title_id: str) -> None:
+        """プレー中の作品を設定する (画面識別でタイトルが決まったときに呼ぶ)。以後のスコア記録に付く。"""
+        if title_id and title_id != self.current_title_id:
+            self.current_title_id = title_id
+            logger.info("プレー作品設定: %s", title_id)
+
     def set_current_song_title(self, title: str) -> None:
         if title and title != "Unknown":
             self.current_song_title = title
@@ -94,6 +115,29 @@ class ScoreManager:
         self.current_genre = music.get("genre") or ""
         self.set_current_chart(music["level"], difficulty)
         return True
+
+    def _ps2_identifier(self):
+        if self._ps2_songs is None:
+            from src.ps2_songs import Ps2SongIdentifier
+            self._ps2_songs = Ps2SongIdentifier(self.db.ps2_song_rows())
+        return self._ps2_songs
+
+    def identify_screen_song(self, image, title_id: str | None, screen: str) -> str:
+        """オプション画面 (screen="option")・リザルト画面 (screen="result") から曲を特定し、music_id を返す。
+
+        作品 (title_id) が未確定・PS2 の曲リストが無いときは空文字。
+        """
+        if not title_id:
+            return ""
+        try:
+            ident = self._ps2_identifier()
+            music_id = ident.identify_option(image, title_id) if screen == "option" else ident.identify_result(image, title_id)
+        except Exception as e:
+            logger.error("曲の特定エラー (%s): %s", screen, e)
+            return ""
+        if music_id:
+            logger.info("画面から曲を特定 (%s / %s): %s", title_id, screen, music_id)
+        return music_id
 
     def identify_banner(self, feature) -> str:
         """オプション画面から読んだバナーの特徴量から曲を特定し、music_id を返す。特定できなければ空文字。"""
@@ -231,6 +275,12 @@ class ScoreManager:
         unidentified = not record.music_id and not self.current_music_id
         if not record.music_id:
             record.music_id = self.current_music_id
+        if not record.title_id:
+            record.title_id = self.current_title_id
+        if not record.platform:
+            record.platform = self.current_platform
+        if record.modernize_patch is None:
+            record.modernize_patch = self.current_modernize_patch
         if record.title == "Unknown" and self.current_song_title != "Unknown":
             record.title = self.current_song_title
         if not record.level and self.current_level:

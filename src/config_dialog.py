@@ -12,6 +12,7 @@ from PySide6.QtCore import Qt
 from src.config import CAPTURE_METHODS, Config, UPDATE_CHECK_MODES, LAST_SONG_DISPLAYS, FALLBACK_SECONDS_RANGE, JPEG_QUALITY_RANGE
 from src.funcs import load_ui_text
 from src.logger import LOG_MAX_SIZE_MB_RANGE
+from src.play_env import PLATFORMS
 from src.music_list_fetch import DEFAULT_MUSIC_LIST_URL
 
 # 1920x1080 のリザルト画面を保存したときのファイルサイズの目安 (KB)。実測の平均値
@@ -202,13 +203,17 @@ class ConfigDialog(QDialog):
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        # スコア保存時の条件
-        save_group = QGroupBox(self.ui.feature.score_save_group)
-        save_vbox = QVBoxLayout(save_group)
-        self._chk_skip_retire = QCheckBox(self.ui.feature.score_skip_retire)
-        self._chk_skip_retire.setToolTip(self.ui.feature.score_skip_retire_tip)
-        save_vbox.addWidget(self._chk_skip_retire)
-        layout.addWidget(save_group)
+        # プレー環境 (スコアに記録する)
+        env_group = QGroupBox(self.ui.feature.play_env_group)
+        env_form = QFormLayout(env_group)
+        self._cmb_platform = QComboBox()
+        for code, name in PLATFORMS.items():
+            self._cmb_platform.addItem(name, code)
+        env_form.addRow(QLabel(self.ui.feature.play_env_platform), self._cmb_platform)
+        self._chk_modernize = QCheckBox(self.ui.feature.play_env_modernize)
+        self._chk_modernize.setToolTip(self.ui.feature.play_env_modernize_tip)
+        env_form.addRow(self._chk_modernize)
+        layout.addWidget(env_group)
 
         # リザルトのスクリーンショット
         shot_group = QGroupBox(self.ui.feature.screenshot_group)
@@ -399,7 +404,8 @@ class ConfigDialog(QDialog):
         self._cmb_update_mode.setCurrentIndex(max(idx, 0))
         self._chk_update_skip.setChecked(self.config.update_skip_until_next)
         self._update_skip_enabled()
-        self._chk_skip_retire.setChecked(self.config.score_skip_retire)
+        self._cmb_platform.setCurrentIndex(max(0, self._cmb_platform.findData(self.config.play_platform)))
+        self._chk_modernize.setChecked(self.config.modernize_patch)
         self._chk_diagnostics.setChecked(self.config.diagnostics_enabled)
         # 「毎回」は他の条件を上書きするので、他の条件を反映してから最後に設定する
         for key in ("best", "fullcombo", "perfect", "all"):
@@ -434,7 +440,8 @@ class ConfigDialog(QDialog):
         self.config.update_check_mode           = self._cmb_update_mode.currentData()
         self.config.update_skip_until_next      = self._chk_update_skip.isChecked()
         self.config.music_list_url              = self._edit_music_list_url.text().strip() or DEFAULT_MUSIC_LIST_URL
-        self.config.score_skip_retire           = self._chk_skip_retire.isChecked()
+        self.config.play_platform               = self._cmb_platform.currentData()
+        self.config.modernize_patch             = self._chk_modernize.isChecked()
         self.config.diagnostics_enabled         = self._chk_diagnostics.isChecked()
         if self._chk_shot_conds["all"].isChecked():
             # 「毎回」を外したときに戻せるよう、選ぶ前の条件を一緒に保存する
