@@ -31,6 +31,8 @@ from PySide6.QtWidgets import (
 )
 
 from src.classes import DIFFICULTY_LEVEL_COLUMNS, PopnOptions, PopnScoreRecord
+from src.play_env import modernize_text, platform_name
+from src.titles import title_name, title_short_name
 from src.config import Config
 from src.option_master import OPTION_KEYS as _OPTION_KEYS
 from src.score_manager import ScoreManager
@@ -82,6 +84,10 @@ class _Column(NamedTuple):
 
 # 既定の列順。並び順・表示/非表示・幅はユーザーが変更でき、config に保存される
 _COLUMNS: list[_Column] = [
+    _Column("title_id",   "作品",         lambda r: title_short_name(r.title_id), 70),
+    _Column("platform",   "環境",         lambda r: platform_name(r.platform), 60),
+    _Column("modernize",  "モダナイズ",   lambda r: modernize_text(r.modernize_patch), 75),
+    _Column("failed",     "クリア",       lambda r: r.clear_type, 80),
     _Column("ver",        "ver",          lambda r: _short_ver(r.ver), 50),
     _Column("difficulty", "難易度",       lambda r: r.difficulty_code, 50),
     _Column("level",      "レベル",       lambda r: r.level if r.level else "", 50, True),
@@ -538,6 +544,10 @@ class ScoreDetailDialog(QDialog):
             timestamp=r.timestamp,
             music_id=self._music_id,
             record_id=r.record_id,
+            title_id=r.title_id,   # 作品・環境は修正ダイアログで変えないので引き継ぐ
+            platform=r.platform,
+            modernize_patch=r.modernize_patch,
+            failed=r.failed,
         )
         try:
             self.score_manager.update_record(updated)
@@ -806,15 +816,18 @@ class ScoreHistoryDialog(QDialog):
         self._row_texts = []
         for row_idx, r in enumerate(records):
             texts = [str(col.value(r)) for col in _COLUMNS]
+            full_names = {"ver": r.ver, "title_id": title_name(r.title_id) if r.title_id else ""}
             # ver は略称で表示するが、正式名称でも検索できるようにする
             self._row_texts.append([
-                _search_key(f"{t}\n{r.ver}" if col.key == "ver" else t)
+                _search_key(f"{t}\n{full_names[col.key]}" if col.key in full_names else t)
                 for col, t in zip(_COLUMNS, texts)
             ])
             for col_idx, (col, text) in enumerate(zip(_COLUMNS, texts)):
                 item = QTableWidgetItem(text)
                 if col.key == "ver":
                     item.setToolTip(r.ver)
+                elif col.key == "title_id" and r.title_id:
+                    item.setToolTip(title_name(r.title_id))
                 if col.numeric:
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter

@@ -152,10 +152,32 @@ class PopnScoreRecord:
     """リザルトのスクリーンショットのファイル名 (保存先フォルダ内)。保存していなければ空"""
     ocr_title: str = ""
     """プレー画面から OCR で読んだ曲名 (未照合)。曲の誤認識を直したときの学習に使う"""
+    title_id: str = ""
+    """プレーした作品 (popn7 など。src/titles.py)。曲の収録タイトルとは別。不明なら空"""
+    platform: str = ""
+    """プレー環境 (real: 実機 / pcsx2 / other。src/play_env.py)。不明なら空"""
+    modernize_patch: bool | None = None
+    """モダナイズパッチ (COOL 25ms) が有効だったか。不明なら None"""
+    failed: bool | None = None
+    """クリア失敗 (STAGE FAILED) だったか。クリアなら False。判定できなかった (対応していない作品など) なら None"""
 
     def __post_init__(self):
         if not self.timestamp:
             self.timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    @property
+    def clear_type(self) -> str:
+        """クリアの種類: "PERFECT" / "FULLCOMBO" / "CLEAR" / "FAILED"。判定できなければ空。
+
+        FAILED = STAGE FAILED。PERFECT = BAD も GOOD も無い、FULLCOMBO = BAD が無い (コンボが切れていない)。
+        BAD が無ければゲージは減らないので、失敗の判定が無くても PERFECT / FULLCOMBO は決まる。
+        CLEAR は、失敗していないと分かったもの (failed が False) だけ。
+        """
+        if self.failed:
+            return "FAILED"
+        if self.total_notes > 0 and self.bad == 0:
+            return "PERFECT" if self.good == 0 else "FULLCOMBO"
+        return "CLEAR" if self.failed is False else ""
 
     @property
     def total_notes(self) -> int:
@@ -180,6 +202,10 @@ class PopnScoreRecord:
             self.combo,
             *(getattr(self.options, key) for key in OPTION_KEYS),
             self.timestamp,
+            self.title_id,
+            self.platform,
+            "" if self.modernize_patch is None else int(self.modernize_patch),
+            "" if self.failed is None else int(self.failed),
             self.music_id,
             int(self.modified),
             self.screenshot_file,
@@ -194,8 +220,34 @@ class DetectMode(Enum):
     result           = 3   # リザルト画面
     option           = 4   # オプション画面
     title            = 5   # タイトル画面
-    ticket           = 6   # チケット画面
-    character_select = 7   # キャラクターセレクト画面
+    character_select = 7   # キャラクターセレクト画面 (作品による)
     exit             = 8   # 終了画面
     loading          = 9   # ロード画面（画面遷移中）
-    status           = 10  # ステータス画面
+    mode_select      = 11  # ゲーム / モード選択画面
+    freetraining     = 12  # フリートレーニング (スタイル選択・選曲など。独立したモード)
+
+
+@dataclass
+class ResultValues:
+    """リザルト画面から読み取った値。読めなかった項目は None。"""
+    score: int | None = None
+    cool: int | None = None
+    great: int | None = None
+    good: int | None = None
+    bad: int | None = None
+    combo: int | None = None
+    best: int | None = None
+    diff: int | None = None
+    score_verified: bool = False   # SCORE が「前回ベスト + 差分」と一致したか
+    failed: bool | None = None     # クリア失敗 (STAGE FAILED の表示)。判定できない作品・画面は None (PS2 に Retire は無い)
+    new_record: bool = False       # 「NEW RECORD!」の帯が表示されているか
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def is_complete(self) -> bool:
+        """記録に必要な全項目が読めているか"""
+        return None not in (self.score, self.cool, self.great, self.good, self.bad, self.combo)
+
+    def key(self) -> tuple:
+        """フレーム間の一致判定用キー"""
+        return (self.score, self.cool, self.great, self.good, self.bad, self.combo)

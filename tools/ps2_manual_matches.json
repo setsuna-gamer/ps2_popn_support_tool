@@ -1,0 +1,31 @@
+{
+  "_comment": "PS2 版の曲名 → 既存曲リスト (Lively) の曲名。表記ゆれで自動照合できない同一曲を、目視で確認したものだけ書く。確認済みで別曲のもの (例: 釈迦 / 大釈迦) は書かない。",
+  "matches": {
+    "MAGICAL VOICES SHOWER": "MAGICAL VOICE SHOWER",
+    "透明なマニキュア moonlight mix": "透明なマニキュア moonlit mix",
+    "和称一起走": "和你一起走",
+    "Love2 シュガ→": "♥LOVE² シュガ→♥",
+    "龍舞 -ＤＲＡＧＯＮ ＤＡＮＣＥ Ｒｅｖｉｓｉｏｎ２-": "龍舞 ～DRAGON DANCE Revision-2",
+    "MOBO★MOGA": "MOBO☆MOGA",
+    "CANDY": "CANDY♥",
+    "We get it together": "beat it together",
+    "夢添うてぃ（des mix）": "夢添うてぃ(desmix2010)",
+    "HONEまでトゥナイト": "HONEまで♥トゥナイト",
+    "Raspberry Heart": "Raspberry ♥ Heart",
+    "消えた！？ナポレオン": "きえた!?ナポレオン",
+    "GALAXY FOREST 11,6&12": "GALAXY FOREST 11.6&12",
+    "サヨナラ＊ヘヴン": "サヨナラ・ヘヴン",
+    "月影華（TSUKI.KAGE.BANA）": "月影華(TSUKI-KAGE-BANA)",
+    "Think of You": "Thinking of You",
+    "さようなら こんにちわ": "さようならこんにちは",
+    "乙経忍不住了": "己経忍不住了",
+    "摩訶不思議アドベンチャー": "魔訶不思議アドベンチャー",
+    "HOTな夜のマル秘ドリンク": "HOTな夜の㊙ドリンク",
+    "魅せられて ～エーゲ海のテーマ～": "魅せられて～エーゲ海のテーマ",
+    "魔法の扉（スペース★マコのテーマ）": "魔法の扉(スペース🪐マコのテーマ)",
+    "キャンディキャンディ": "キャンディ・キャンディ"
+  },
+  "rejected": [
+    "釈迦 (既存の「大釈迦」とは別曲)"
+  ]
+}

@@ -69,6 +69,19 @@ include_files.append(("pyproject.toml", "pyproject.toml"))
 if os.path.exists("LICENSE"):
     include_files.append(("LICENSE", "LICENSE"))
 
+# 画面識別のテンプレート (tools/build_screen_profiles.py の生成物。無いと作品・画面を識別できない)
+if os.path.exists("src/screen_profiles.json"):
+    include_files.append(("src/screen_profiles.json", "src/screen_profiles.json"))
+
+# PS2 版の読み取り用テンプレート (生成物。tools/build_ps2_digit_templates.py / build_ps2_marks.py)
+for _name in ("ps2_digit_templates.json", "ps2_mark_templates.json"):
+    if os.path.exists(f"src/{_name}"):
+        include_files.append((f"src/{_name}", f"src/{_name}"))
+
+# PS2 版の曲リスト (収録作品・バナー特徴量を持つ静的リスト)
+if os.path.exists("ps2_music_list.json"):
+    include_files.append(("ps2_music_list.json", "ps2_music_list.json"))
+
 # アイコンファイル
 icon_path = None
 if os.path.exists("src/icon.ico"):
@@ -124,12 +137,19 @@ build_exe_options = {
         "src.obs_dialog",
         "src.obs_websocket_manager",
         "src.screen_reader",
-        "src.result_reader",
-        "src.song_reader",
         "src.banner_reader",
-        "src.digit_templates",
-        "src.judge_reader",
-        "src.judge_templates",
+        "src.screen_profile",
+        "src.screen_tracker",
+        "src.titles",
+        "src.ps2_banner",
+        "src.ps2_ocr",
+        "src.ps2_numbers",
+        "src.ps2_layouts",
+        "src.ps2_readers",
+        "src.ps2_marks",
+        "src.ps2_songs",
+        "src.song_info",
+        "src.win_ocr",
         "src.hdr_monitor",
         "src.score_manager",
         "src.score_dialog",

@@ -27,6 +27,8 @@ from PySide6.QtWidgets import (
 
 from src.config import Config
 from src.classes import DetectMode, PopnJudge, PopnOptions, format_song
+from src.play_env import modernize_text, platform_name
+from src.titles import title_name
 from src.cpu_affinity import LivelyCpuAffinity
 from src.screen_reader import ScreenReader
 from src.option_reader import GUIDE_SE_ON
@@ -71,9 +73,9 @@ _MODE_COLORS = {
     DetectMode.select:           "#40c4ff",  # 選曲中（水色）
     DetectMode.option:           "#ff80ab",  # オプション（ピンク）
     DetectMode.title:            "#b388ff",  # タイトル（紫）
-    DetectMode.status:           "#b388ff",  # ステータス（紫）
-    DetectMode.ticket:           "#b388ff",  # チケット（紫）
+    DetectMode.mode_select:      "#b388ff",  # モード選択（紫）
     DetectMode.character_select: "#b388ff",  # キャラセレクト（紫）
+    DetectMode.freetraining:     "#40c4ff",  # フリートレーニング（水色）
     DetectMode.exit:             "#ff5252",  # 終了画面（赤）
     DetectMode.loading:          "#ffab40",  # ロード中（オレンジ）
     DetectMode.unknown:          "#aaaaaa",  # 待機中（グレー）
@@ -83,10 +85,10 @@ _MODE_COLORS = {
 # 1 回の画面遷移で出る開始・終了トリガーの順序は、この並び順で決まる
 _TRIGGER_MODES = (
     DetectMode.title,
-    DetectMode.status,
-    DetectMode.ticket,
+    DetectMode.mode_select,
     DetectMode.character_select,
     DetectMode.select,
+    DetectMode.freetraining,
     DetectMode.option,
     DetectMode.play,
     DetectMode.result,
@@ -143,6 +145,7 @@ class MainWindow(QMainWindow):
 
         # 画面状態
         self.current_mode = DetectMode.unknown
+        self._shown_title_id: str | None = None   # 画面に表示している作品 (title_id)
         self._title_scanned = False
         self._title_frames = 0
 
@@ -163,7 +166,7 @@ class MainWindow(QMainWindow):
         self._result_stable = 0
         self._result_values = None   # 直近に全項目を読めた値
         self._result_image = None    # 直近のリザルト画面フレーム
-        self._result_retire = False  # リザルト画面で「Retire」の表示を検出したか
+        self._result_failed = None   # リザルト画面で「STAGE FAILED」(クリア失敗) を検出したか。判定できない作品は None
         self._result_new_record = False  # リザルト画面で「NEW RECORD!」の表示を検出したか
 
         # 自動更新 (確認はメニュー、または設定で有効なら起動の少しあと)
@@ -171,6 +174,7 @@ class MainWindow(QMainWindow):
         self.updater = UpdateController(self, self.close)
 
         self._setup_ui()
+        self._apply_play_environment()
         self._setup_obs()
         # 曲リストは確認なしで自動更新し、アプリ本体は設定の更新チェック方式に従う
         from src.startup_check import StartupUpdateCheck
@@ -310,9 +314,9 @@ class MainWindow(QMainWindow):
             DetectMode.select:           status.select,
             DetectMode.option:           status.option,
             DetectMode.title:            status.title,
-            DetectMode.status:           status.status,
-            DetectMode.ticket:           status.ticket,
+            DetectMode.mode_select:      status.mode_select,
             DetectMode.character_select: status.character_select,
+            DetectMode.freetraining:     status.freetraining,
             DetectMode.exit:             status.exit,
             DetectMode.loading:          status.loading,
             DetectMode.unknown:          status.waiting_game,
@@ -320,6 +324,14 @@ class MainWindow(QMainWindow):
 
         self.lbl_mode = QLabel()
         self.lbl_mode.setFont(font_val)
+
+        self.lbl_title = QLabel(self.ui.main_display.title_unknown)
+        self.lbl_title.setFont(font_val)
+        self.lbl_title.setStyleSheet("color: #aaaaaa; font-weight: bold;")
+
+        self.lbl_env = QLabel("")
+        self.lbl_env.setFont(font_val)
+        self.lbl_env.setStyleSheet("color: #ffffff; font-weight: bold;")
 
         self.lbl_uptime = QLabel("00:00:00")
         self.lbl_uptime.setFont(font_time)
@@ -335,6 +347,8 @@ class MainWindow(QMainWindow):
         self.lbl_last_song.setWordWrap(True)
 
         info_form.addRow(make_row_label(self.ui.main_display.current_mode), self.lbl_mode)
+        info_form.addRow(make_row_label(self.ui.main_display.current_title), self.lbl_title)
+        info_form.addRow(make_row_label(self.ui.main_display.play_env),      self.lbl_env)
         info_form.addRow(make_row_label(self.ui.main_display.uptime),       self.lbl_uptime)
         info_form.addRow(make_row_label(self.ui.main_display.today_notes),  self.lbl_today_notes)
         info_form.addRow(make_row_label(self.ui.main_display.last_song),    self.lbl_last_song)
@@ -436,10 +450,31 @@ class MainWindow(QMainWindow):
                 return
 
             mode = self.screen_reader.detect_mode(image)
+            self._sync_title()
             self._handle_mode(mode, image)
 
         except Exception:
             logger.error(traceback.format_exc())
+
+    def _apply_play_environment(self):
+        """設定のプレー環境・モダナイズパッチの有無を、スコア記録と画面表示に反映する。"""
+        platform, patch = self.config.play_platform, self.config.modernize_patch
+        self.score_manager.set_play_environment(platform, patch)
+        self.lbl_env.setText(f"{platform_name(platform)} / モダナイズ{modernize_text(patch)}")
+
+    def _sync_title(self):
+        """画面識別で確定した作品を、スコア記録と画面表示に反映する。"""
+        title_id = self.screen_reader.current_title
+        if title_id == self._shown_title_id:
+            return
+        self._shown_title_id = title_id
+        if title_id:
+            self.score_manager.set_current_title_id(title_id)
+            self.lbl_title.setText(title_name(title_id))
+            self.lbl_title.setStyleSheet("color: #ffffff; font-weight: bold;")
+        else:
+            self.lbl_title.setText(self.ui.main_display.title_unknown)
+            self.lbl_title.setStyleSheet("color: #aaaaaa; font-weight: bold;")
 
     def _show_mode(self, mode: DetectMode, in_statusbar: bool = True):
         """現在のモード表示を更新する。"""
@@ -497,7 +532,7 @@ class MainWindow(QMainWindow):
             self._result_stable = 0
             self._result_values = None
             self._result_image = None
-            self._result_retire = False
+            self._result_failed = None
             self._result_new_record = False
             self._result_banner_id = self._result_banner_candidate = ""
             self._result_banner_stable = 0
@@ -540,9 +575,12 @@ class MainWindow(QMainWindow):
             self.score_manager.set_current_options(PopnOptions.from_dict({**current, **values}))
 
     def _read_banner_id(self, image) -> str:
-        """画面のバナーから曲を特定して music_id を返す。特定できなければ空文字。"""
-        feature = self.screen_reader.read_banner(image)
-        return self.score_manager.identify_banner(feature) if feature is not None else ""
+        """画面 (オプション画面・リザルト画面) から曲を特定して music_id を返す。特定できなければ空文字。
+
+        オプション画面はバナー (決まらなければ OCR)、リザルト画面はバナーが出る作品だけバナーで特定する (src/ps2_songs.py)。
+        """
+        screen = "result" if self.current_mode == DetectMode.result else "option"
+        return self.score_manager.identify_screen_song(image, self.screen_reader.current_title, screen)
 
     def _track_banner(self, image, candidate: str, stable: int) -> tuple[str, int, str]:
         """バナーを 1 回読み、同じ曲が続けて読めたら採用する。(候補, 連続回数, 採用した曲 (未採用なら空)) を返す。
@@ -660,9 +698,9 @@ class MainWindow(QMainWindow):
                 image, self._result_banner_candidate, self._result_banner_stable
             )
         values = self.screen_reader.read_result_values(image)
-        # 「Retire」の表示が数値より遅れて出ても拾えるよう、一度でも検出したら覚えておく
-        if values is not None and values.retire:
-            self._result_retire = True
+        # 「STAGE FAILED」の表示は数値より遅れて出たり、動いたりするため、一度でも検出したら覚えておく
+        if values is not None and values.failed is not None:
+            self._result_failed = bool(self._result_failed) or values.failed
         # 「NEW RECORD!」の帯も表示が遅れたり点滅したりするため、一度でも検出したら覚えておく
         if values is not None and values.new_record:
             self._result_new_record = True
@@ -715,17 +753,9 @@ class MainWindow(QMainWindow):
                 difficulty=self.score_manager.current_difficulty,
                 values=values,
             )
-            if self.config.score_skip_retire and self._result_retire:
-                # 記録はしないが、打鍵数は本日の打鍵数に反映する
-                logger.info("リタイアのためスコアを保存しません: %s - SCORE:%d", record.title, record.score)
-                self._check_date_rollover()
-                self._today_notes += record.cool + record.great + record.good
-                self._reset_song_judge()
-                self._update_display()
-                self._statusbar.showMessage(self.ui.status.retire_skipped, 6000)
-                saved = False
-            else:
-                saved = self.score_manager.add_record(record)
+            if self._result_failed is not None:
+                record.failed = self._result_failed
+            saved = self.score_manager.add_record(record)
             if saved:
                 # プレー中の暫定値を捨て、リザルト画面の値を本日の打鍵数に反映する
                 self._check_date_rollover()
@@ -767,8 +797,7 @@ class MainWindow(QMainWindow):
     def _save_result_screenshot(self, image, record, values):
         """設定に応じて、記録したリザルト画面のスクリーンショットを保存する。"""
         conds = self.config.result_screenshot_conditions
-        # リタイアしたプレーは BAD が 0 でも FULL COMBO / PERFECT として扱わない
-        full_combo = not self._result_retire and record.total_notes > 0 and record.bad == 0
+        full_combo = record.clear_type in ("PERFECT", "FULLCOMBO")
         # 自己ベスト更新 = 「NEW RECORD!」の表示があり、BEST SCORE の差分が + であること。
         # 手元カメラ等で BEST SCORE 欄が読めなかったときは、帯の表示だけで判断する
         diff = values.diff if values is not None else None
@@ -776,7 +805,7 @@ class MainWindow(QMainWindow):
         if not (
             "all" in conds
             or ("fullcombo" in conds and full_combo)
-            or ("perfect" in conds and full_combo and record.good == 0)
+            or ("perfect" in conds and record.clear_type == "PERFECT")
             or ("best" in conds and personal_best)
         ):
             return
@@ -918,6 +947,7 @@ class MainWindow(QMainWindow):
         if dlg.exec():
             self.config.save_config()
             self.config.apply_log_settings()
+            self._apply_play_environment()
             # キャプチャ方式の変更を反映
             self._apply_obs_config()
             # 最前面フラグの更新 (フラグを変えるとウィンドウが隠れるので表示し直す)

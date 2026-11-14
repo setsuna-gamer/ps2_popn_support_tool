@@ -2,8 +2,7 @@
 
 GUI に依存しない純粋な集計処理。入力は PopnScoreRecord のリスト (プレー日時の昇順)。
 
-FULL COMBO / PERFECT は BAD / GOOD の数だけで判定する (リザルト画面の「Retire」表示は
-記録に残していないため、リタイアしたプレーも BAD が 0 なら FULL COMBO 扱いになりうる)。
+FULL COMBO / PERFECT は BAD / GOOD の数だけで判定する (PS2 版に Retire は無い。クリア失敗は記録の `failed` で区別できる)。
 """
 from __future__ import annotations
 

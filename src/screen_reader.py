@@ -1,33 +1,20 @@
-"""pop'n music Lively 画面状態検出・判定内訳読み取り"""
+"""pop'n music (PS2) 画面状態検出・判定内訳読み取り"""
 from __future__ import annotations
 
-import functools
 import os
 from datetime import datetime
 
-import imagehash
 import numpy as np
 from PIL import Image
 
-from src.banner_reader import read_banner
-from src.classes import DetectMode, PopnJudge, PopnOptions, PopnScoreRecord
-from src.define import (
-    PosIsPlay,
-    PosMusicSelect,
-    PosResult,
-    PosOption,
-    PosTitle,
-    PosTicket,
-    PosStatus,
-    PosCharacterSelect,
-    PosExit,
-    PosLoading,
-)
-from src.judge_reader import JUDGE_NAMES, read_judge_counts
+from src.classes import DetectMode, PopnJudge, PopnOptions, PopnScoreRecord, ResultValues
+JUDGE_NAMES = ("cool", "great", "good", "bad")
 from src.logger import get_logger
-from src.option_reader import has_option_icons, read_option_icons, read_option_list
-from src.result_reader import ResultValues, read_result_values
-from src.song_reader import PlaySongInfo, crop_title, read_play_song
+from src.option_reader import read_option_icons, read_option_list
+from src.ps2_marks import read_marks
+from src.ps2_readers import read_play, read_result
+from src.screen_tracker import ScreenTracker
+from src.song_info import PlaySongInfo
 
 logger = get_logger(__name__)
 
@@ -37,38 +24,17 @@ _JUDGE_MAX_STEP = 20
 _JUDGE_RESTART_FRAMES = 5
 
 
-@functools.lru_cache(maxsize=None)
-def _ref_hash(hex_str: str) -> imagehash.ImageHash:
-    return imagehash.hex_to_hash(hex_str)
-
-
-def _matches(image: Image.Image, threshold: int, *marks: tuple) -> bool:
-    """画面の目印 (領域, 基準ハッシュまたはそのリスト) のいずれかに一致するか。
-
-    領域の average hash と基準ハッシュの距離が threshold 以内なら一致とみなす。
-    """
-    try:
-        for area, refs in marks:
-            h = imagehash.average_hash(image.crop(area))
-            if isinstance(refs, str):
-                refs = (refs,)
-            if any(_ref_hash(ref) - h <= threshold for ref in refs):
-                return True
-    except Exception:
-        pass
-    return False
-
-
 class ScreenReader:
-    """pop'n music Lively の画面状態検出と判定内訳読み取りを担う。
+    """pop'n music (PS2) の画面状態検出と判定内訳読み取りを担う。
 
     判定内訳の読み取り方針:
         プレー画面下部バーに「BAD 0010 GOOD 0010 GREAT 0003 COOL 0003」が
-        リアルタイムで表示される。この累計値を数字として読み取り (src/judge_reader.py)、
+        リアルタイムで表示される。この累計値を数字として読み取り (src/ps2_readers.py)、
         読み誤りを弾きながら曲ごとの判定内訳として保持する。
     """
 
-    def __init__(self):
+    def __init__(self, tracker: ScreenTracker | None = None):
+        self.tracker = tracker if tracker is not None else ScreenTracker()
         self.reset_judge()
 
     def reset_judge(self) -> None:
@@ -80,98 +46,6 @@ class ScreenReader:
     # ------------------------------------------------------------------
     # 画面状態検出
     # ------------------------------------------------------------------
-
-    def is_play(self, image: Image.Image) -> bool:
-        """プレー画面かどうか"""
-        return _matches(
-            image, PosIsPlay.THRESHOLD,
-            # 左上の「Esc長押しでリタイア / F1長押しでリトライ」枠（常時固定表示）
-            (PosIsPlay.AREA_RETRY, PosIsPlay.AHASH_RETRY_LIST),
-            # GROOVE GAUGE ラベル
-            (PosIsPlay.AREA_GAUGE, PosIsPlay.AHASH_GAUGE),
-        )
-
-    def is_result(self, image: Image.Image) -> bool:
-        """リザルト画面かどうか"""
-        return _matches(
-            image, PosResult.THRESHOLD,
-            # スコアパネル左側の固定ラベル列（キャラクターやスコア値に依存せず完全不変）
-            (PosResult.AREA_PANEL, PosResult.AHASH_PANEL),
-            # 左下の「白 ★オプション もう一度」操作ボタン
-            (PosResult.AREA_AGAIN_BTN, PosResult.AHASH_AGAIN_BTN),
-        )
-
-    def is_option(self, image: Image.Image) -> bool:
-        """オプション画面かどうか（OptionSelect 画面および詳細設定画面の両方に対応）"""
-        if _matches(
-            image, PosOption.THRESHOLD,
-            # OptionSelect 画面 (曲決定直後) の「OptionSelect」ロゴ
-            (PosOption.AREA_DECIDE, PosOption.AHASH_DECIDE),
-            # 詳細設定画面の設定切替ボタン (フル設定切替 / シンプル設定切替)
-            (PosOption.AREA_BTN, PosOption.AHASH_BTN_LIST),
-            # 詳細設定画面の中央上部「CATEGORY」プレート
-            (PosOption.AREA_CATEGORY, PosOption.AHASH_CATEGORY_LIST),
-        ):
-            return True
-        try:
-            # OptionSelect 画面のオプションアイコン (ロゴの位置がずれるキャプチャ方式向け)
-            return has_option_icons(np.asarray(image.convert("RGB")))
-        except Exception:
-            return False
-
-    def is_title(self, image: Image.Image) -> bool:
-        """タイトル画面かどうか"""
-        return _matches(image, PosTitle.THRESHOLD, (PosTitle.AREA, PosTitle.AHASH))
-
-    def is_ticket(self, image: Image.Image) -> bool:
-        """チケット画面かどうか"""
-        return _matches(
-            image, PosTicket.THRESHOLD,
-            # 右上の「Ticket」ロゴ
-            (PosTicket.AREA_LOGO, PosTicket.AHASH_LOGO),
-            # 右下の所持チケット表示（カテゴリ選択中はロゴが隠れるため）
-            (PosTicket.AREA_OWNED, PosTicket.AHASH_OWNED),
-        )
-
-    def is_status(self, image: Image.Image) -> bool:
-        """ステータス画面かどうか"""
-        return _matches(
-            image, PosStatus.THRESHOLD,
-            # 右上の「Status」ロゴ
-            (PosStatus.AREA_LOGO, PosStatus.AHASH_LOGO),
-            # プレーヤーカード右下の「ポプともLivelyID：」ラベル
-            (PosStatus.AREA_ID, PosStatus.AHASH_ID),
-        )
-
-    def is_character_select(self, image: Image.Image) -> bool:
-        """キャラクターセレクト画面かどうか"""
-        return _matches(
-            image, PosCharacterSelect.THRESHOLD,
-            # 右下の「1 お気に入り」操作ボタン
-            (PosCharacterSelect.AREA, PosCharacterSelect.AHASH),
-            # 左下の「player」ラベル（お気に入りボタンが「解除」に変わっている場合向け）
-            (PosCharacterSelect.AREA_PLAYER, PosCharacterSelect.AHASH_PLAYER),
-        )
-
-    def is_exit(self, image: Image.Image) -> bool:
-        """終了画面（See you!!）かどうか"""
-        return _matches(image, PosExit.THRESHOLD, (PosExit.AREA, PosExit.AHASH))
-
-    def is_loading(self, image: Image.Image) -> bool:
-        """ロード画面（画面遷移中）かどうか。
-
-        グリッド型ロード画面（CHARA SELECT / MUSIC SELECT / OPTION SELECT / STAGE RESULT）
-        およびプレーロード画面（"Let's enjoy music!"）を検出する。
-        """
-        return _matches(
-            image, PosLoading.THRESHOLD,
-            # グリッド型ロード画面: 左上の pop'n music ロゴ + POP'N MUSIC パネル
-            (PosLoading.AREA_GRID_LOGO, PosLoading.AHASH_GRID_LOGO),
-            # グリッド型ロード画面: 下段全体
-            (PosLoading.AREA_GRID_BOTTOM, PosLoading.AHASH_GRID_BOTTOM),
-            # プレーロード画面: "Let's enjoy music!" バナー
-            (PosLoading.AREA_PLAY_BANNER, PosLoading.AHASH_PLAY_BANNER),
-        )
 
     def is_valid_game_screen(self, image: Image.Image) -> bool:
         """有効なゲーム画面が取り込めているかどうかを判定する。
@@ -190,42 +64,25 @@ class ScreenReader:
         except Exception:
             return False
 
-    def is_music_select(self, image: Image.Image) -> bool:
-        """選曲画面かどうか"""
-        return _matches(
-            image, PosMusicSelect.THRESHOLD,
-            # 通常選曲時の右上「MusicSelect」ロゴ
-            (PosMusicSelect.AREA_LOGO, PosMusicSelect.AHASH_LOGO),
-            # カテゴリ選択中等も含めて常に表示される左下の Backspace ボタン
-            (PosMusicSelect.AREA_BACKSPACE, PosMusicSelect.AHASH_BACKSPACE),
-            # ダイアログ (クエスト・判定調整・キーコンフィグ等) を開いていても残る左下ボタンの左側
-            (PosMusicSelect.AREA_GUIDE, PosMusicSelect.AHASH_GUIDE),
-        )
 
     def detect_mode(self, image: Image.Image) -> DetectMode:
-        """現在の画面状態を返す。
+        """現在の画面状態を返す (PS2 版: タイトル × モードの識別。src/screen_tracker.py)。
 
-        黒画面・未取得時は unknown。それ以外は以下の順に判定し、最初に一致したものを返す。
+        黒画面・未取得時は unknown。作品 (タイトル) は `current_title` に確定する。
         """
         if not self.is_valid_game_screen(image):
             return DetectMode.unknown
+        return self.tracker.update(image).mode
 
-        checks = (
-            (DetectMode.loading,          self.is_loading),
-            (DetectMode.title,            self.is_title),
-            (DetectMode.status,           self.is_status),
-            (DetectMode.ticket,           self.is_ticket),
-            (DetectMode.character_select, self.is_character_select),
-            (DetectMode.option,           self.is_option),
-            (DetectMode.exit,             self.is_exit),
-            (DetectMode.play,             self.is_play),
-            (DetectMode.result,           self.is_result),
-            (DetectMode.select,           self.is_music_select),
-        )
-        for mode, check in checks:
-            if check(image):
-                return mode
-        return DetectMode.unknown
+    @property
+    def current_title(self) -> str | None:
+        """確定した作品 (title_id: popn7 など)。未確定なら None。"""
+        return self.tracker.title
+
+    def reset_title(self) -> None:
+        """確定した作品を捨てる (ゲームの切り替え・取り込みのやり直しなど)。"""
+        self.tracker.reset()
+
 
     # ------------------------------------------------------------------
     # 判定内訳読み取り
@@ -240,7 +97,16 @@ class ScreenReader:
         Returns:
             (判定内訳の累計値, 次の曲の開始を検出して累計値が巻き戻ったか)
         """
-        counts = read_judge_counts(image)
+        counts = dict.fromkeys(JUDGE_NAMES)
+        title = self.current_title
+        if title:
+            try:
+                play = read_play(image, title)
+            except Exception as e:
+                logger.error("プレー画面の判定読み取りエラー: %s", e)
+                play = None
+            if play is not None:
+                counts = {name: getattr(play, name) for name in JUDGE_NAMES}
         current = self._judge
 
         # 全判定が読めていて大きく減っている状態が続く → 次の曲が始まり 0 から数え直している
@@ -293,49 +159,47 @@ class ScreenReader:
             logger.error("オプション読み取りエラー: %s", e)
             return None
 
-    def read_banner(self, image: Image.Image):
-        """オプション画面中央上の曲バナーの特徴量を読み取る。バナーが表示されていなければ None。
-        曲の特定は ScoreManager.identify_banner で行う。
-        """
-        try:
-            return read_banner(image)
-        except Exception as e:
-            logger.error("バナー読み取りエラー: %s", e)
-            return None
-
     # ------------------------------------------------------------------
     # 曲名認識 (プレー画面上部)
     # ------------------------------------------------------------------
 
     def read_play_song(self, image: Image.Image) -> PlaySongInfo:
-        """プレー画面上部の曲名バーから曲名 (OCR 文字列) と難易度区分を読み取る。
-        曲名は誤字を含みうるので、ScoreManager.identify_song で曲テーブルと照合して使う。
+        """プレー画面の曲名・難易度区分を読む (PS2 版は読まない)。
+
+        PS2 版のプレー画面の曲名は画像フォントで OCR できず、難易度の表示も作品ごとに違う。曲はオプション画面のバナー
+        (src/ps2_songs.py) で特定して使うので、ここは何も読まない (空)。
         """
-        try:
-            return read_play_song(image)
-        except Exception as e:
-            logger.error("曲名読み取りエラー: %s", e)
-            return PlaySongInfo()
+        return PlaySongInfo()
 
     @staticmethod
     def save_unread_title(image: Image.Image) -> None:
         """曲を特定できなかったプレー画面の曲名バーを保存する (調査用)。"""
-        try:
-            crop = crop_title(image)
-            if crop is not None:
-                os.makedirs("out", exist_ok=True)
-                crop.save("out/last_song_title.png")
-        except Exception as e:
-            logger.debug("曲名バー保存失敗: %s", e)
+        # PS2 版は曲名バーを読まない (画像フォント)。オプション画面のバナーで曲を特定する (src/ps2_songs.py)
+        return None
 
     # ------------------------------------------------------------------
     # リザルト画面認識
     # ------------------------------------------------------------------
 
     def read_result_values(self, image: Image.Image) -> ResultValues | None:
-        """リザルト画面のスコアパネルから数値を読み取る。パネルが見つからなければ None。"""
+        """リザルト画面の数値を、確定した作品のレイアウトで読み取る (src/ps2_readers.py)。
+
+        作品が未確定・未対応 (数字のテンプレートが揃っていない)・読めない項目がある・値のつじつまが合わない
+        ときは None (呼び出し側がプレー中の集計値で補う)。
+        """
+        title = self.current_title
+        if not title:
+            return None
         try:
-            return read_result_values(image)
+            r = read_result(image, title)
+            if r is None:
+                return None
+            marks = read_marks(image, title)
+            return ResultValues(score=r.stage_score, cool=r.cool, great=r.great, good=r.good, bad=r.bad,
+                                combo=r.combo, score_verified=True,
+                                # STAGE FAILED = クリア失敗 (PS2 に Retire は無い。src/ps2_marks.py)。
+                                # 判定できない作品は None のまま
+                                failed=marks.failed, new_record=bool(marks.new_record))
         except Exception as e:
             logger.error("リザルト読み取りエラー: %s", e)
             return None
@@ -393,6 +257,7 @@ class ScreenReader:
             **judge,
             combo=values.combo if values.combo is not None else 0,
             options=options or PopnOptions(),
+            failed=values.failed,
         )
 
     @staticmethod

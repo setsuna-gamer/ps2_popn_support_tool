@@ -7,7 +7,7 @@
     2. 各行の下には色付きの下線が引かれている。キャプチャ方式によって縦位置・縦倍率が
        変わるため、固定座標ではなく下線を手がかりに各行の位置を求める。
     3. 各行の文字 (白。オジャマの「ずっと」は黄) を二値化し、
-       Windows 標準 OCR (src/song_reader.py) で文字列にする。
+       Windows 標準 OCR (src/win_ocr.py) で文字列にする。
     4. OCR 結果をオプションマスター (src/option_master.py) の値に正規化する。
        OJAMA 行の先頭に黄色の「ずっと」があれば「OJAMA ずっと」を ON とする。
 
@@ -32,7 +32,7 @@ from PIL import Image, ImageDraw, ImageFont
 from src.define import PosOptionIcons, PosOptionList
 from src.logger import get_logger
 from src.option_master import OPTION_MASTER, _match_key, normalize_option
-from src.song_reader import _ocr, _runs
+from src.win_ocr import _ocr, _runs
 
 logger = get_logger(__name__)
 
